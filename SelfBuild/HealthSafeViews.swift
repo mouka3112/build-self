@@ -1,10 +1,9 @@
 import SwiftUI
-
-@MainActor
 import Combine
 
 // MARK: - Santé + rapport médecin (PDF)
 enum HealthReport {
+    @MainActor
     static func make(store: AppStore, days: Int) -> URL? {
         let cal = Calendar.current
         let start = cal.date(byAdding: .day, value: -days, to: .now) ?? .now
