@@ -1,4 +1,6 @@
 import SwiftUI
+
+@MainActor
 import Combine
 
 // MARK: - Santé + rapport médecin (PDF)
@@ -24,7 +26,7 @@ enum HealthReport {
                 var y: CGFloat = 40
                 ctx.beginPage()
                 for l in lines {
-                    let h = (l as NSString).boundingRect(with: CGSize(width: 515, height: .greatestFiniteMagnitude),
+                    let h = (l as NSString).boundingRect(with: CGSize(width: 515, height: Double.greatestFiniteMagnitude),
                                                          options: .usesLineFragmentOrigin, attributes: attrs, context: nil).height
                     if y + h > 800 { ctx.beginPage(); y = 40 }
                     (l as NSString).draw(in: CGRect(x: 40, y: y, width: 515, height: h), withAttributes: attrs)
