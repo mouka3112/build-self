@@ -143,7 +143,7 @@ struct SmartButton: View {
         case .hygiene: return (.hygiene, "Hygiène")
         case .rest: return (.running, "Bouger")
         case .sleep: return (.safe, "Journal du soir")
-        case .other: return (.nexus, "Nexus")
+        case .other: return t.title.contains("Photos des cours") ? (.lessons, "Photos des cours") : (.nexus, "Nexus")
         }
     }
 
@@ -152,7 +152,7 @@ struct SmartButton: View {
         if t.dest.tabIndex != router.selectedTab {
             Button { Haptic.tap(); router.go(t.dest) } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: t.dest.icon)
+                    Image(systemName: t.dest.icon).foregroundStyle(t.dest.color)
                     Text(t.label).lineLimit(1)
                     Image(systemName: "chevron.right").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
                 }
@@ -192,6 +192,10 @@ struct DestinationView: View {
         case .health: HealthView()
         case .safe: SafeSpaceView()
         case .settings: SettingsView()
+        case .tutors: TutorsView()
+        case .reminders: RemindersView()
+        case .lessons: LessonsView()
+        case .school: SchoolView()
         }
     }
 }

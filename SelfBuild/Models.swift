@@ -17,6 +17,7 @@ struct TaskItem: Identifiable, Codable, Hashable {
 
 struct SetRecord: Identifiable, Codable, Hashable {
     var id = UUID(); var date: Date; var exercise: String; var weight: Double; var reps: Int
+    var effort: Int? = nil     // 1 facile, 2 correct, 3 dur
 }
 struct FoodEntry: Identifiable, Codable, Hashable {
     var id = UUID(); var date: Date; var name: String; var grams: Double; var kcal: Double; var protein: Double
@@ -76,6 +77,31 @@ struct SafeEntry: Identifiable, Codable, Hashable {
     var id = UUID(); var date: Date; var text: String; var mood: Int?; var moodLabel: String?; var advice: String?
 }
 
+struct Tutor: Identifiable, Codable, Hashable {
+    var id = UUID(); var name: String; var subject: String
+    var price: Double            // TND par séance
+    var weekday: Int             // 1 = dimanche … 7 = samedi
+    var hour: Int; var minute: Int
+    var sessionsPerMonth = 4
+}
+struct TutorSession: Identifiable, Codable, Hashable {
+    var id = UUID(); var tutorID: UUID; var date: Date; var paid = false
+}
+struct ExamItem: Identifiable, Codable, Hashable {
+    var id = UUID(); var subject: String; var date: Date; var topic: String
+}
+struct TimetableEntry: Identifiable, Codable, Hashable {
+    var id = UUID(); var weekday: Int; var start: Int; var end: Int; var subject: String
+}
+struct UserReminder: Identifiable, Codable, Hashable {
+    var id = UUID(); var title: String; var date: Date
+    var repeatRule: String       // none | daily | weekly | monthly
+    var urgent = true
+}
+struct LessonPhoto: Identifiable, Codable, Hashable {
+    var id = UUID(); var date: Date; var subject: String; var file: String; var summary: String?
+}
+
 enum HygieneHabit: String, CaseIterable, Identifiable {
     case teethAM, faceAM, teethPM, facePM, shower, hair
     var id: String { rawValue }
@@ -111,6 +137,7 @@ enum HygieneHabit: String, CaseIterable, Identifiable {
 enum AppDestination: String, Identifiable, CaseIterable {
     case hub, nexus, muscu, nutrition, plus
     case study, finance, notes, hygiene, wardrobe, kitchen, music, running, projects, challenges, capsule, reports, health, safe, settings
+    case tutors, reminders, lessons, school
     var id: String { rawValue }
     var tabIndex: Int? {
         switch self {
@@ -144,6 +171,10 @@ enum AppDestination: String, Identifiable, CaseIterable {
         case .health: return "Santé"
         case .safe: return "Safe Space"
         case .settings: return "Réglages"
+        case .tutors: return "Cours particuliers"
+        case .reminders: return "Rappels"
+        case .lessons: return "Mes cours (photos)"
+        case .school: return "Emploi du temps & contrôles"
         }
     }
     var icon: String {
@@ -168,6 +199,10 @@ enum AppDestination: String, Identifiable, CaseIterable {
         case .health: return "heart.text.square.fill"
         case .safe: return "lock.shield.fill"
         case .settings: return "gearshape.fill"
+        case .tutors: return "person.2.fill"
+        case .reminders: return "bell.badge.fill"
+        case .lessons: return "photo.stack.fill"
+        case .school: return "calendar"
         }
     }
 }
@@ -222,7 +257,7 @@ struct FoodCard: Identifiable, Codable {
 enum Finance {
     static let categories: [(name: String, icon: String)] = [
         ("Snacks", "takeoutbag.and.cup.and.straw.fill"), ("Nutrition", "fork.knife"), ("Transport", "bus.fill"),
-        ("École", "backpack.fill"), ("Sport", "figure.run"), ("Loisirs", "gamecontroller.fill"), ("Autre", "ellipsis.circle.fill")
+        ("École", "backpack.fill"), ("Études", "graduationcap.fill"), ("Sport", "figure.run"), ("Loisirs", "gamecontroller.fill"), ("Autre", "ellipsis.circle.fill")
     ]
     static let amounts: [Double] = [0.5, 1, 2, 5, 10, 20]
 }

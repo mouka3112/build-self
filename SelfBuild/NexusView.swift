@@ -30,7 +30,7 @@ struct NexusView: View {
         }
         .hideKeyboardOnTap()
         .photoPicker(isPresented: $showPicker) { attached = $0 }
-        .onAppear {
+        .task(id: router.pendingPrompt) {
             if let p = router.pendingPrompt { router.pendingPrompt = nil; send(p) }
         }
     }
@@ -42,7 +42,7 @@ struct NexusView: View {
                 if let img = m.image {
                     Image(uiImage: img).resizable().scaledToFit().frame(maxWidth: 200).clipShape(RoundedRectangle(cornerRadius: 14))
                 }
-                if !m.text.isEmpty { Text(m.text) } else if !m.isUser { ProgressView().tint(.white) }
+                if !NexusActions.clean(m.text).isEmpty { Text(NexusActions.clean(m.text)) } else if !m.isUser { ProgressView().tint(.white) }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             .foregroundStyle(m.isUser ? Color.black : Color.white)
@@ -89,14 +89,13 @@ struct NexusView: View {
                 try await gemini.streamChat(history: history, store: store) { delta in
                     messages[idx].text += delta
                 }
-                var r = messages[idx].text
-                if let range = r.range(of: #"\[\[GOTO:([a-z]+)\]\]"#, options: .regularExpression) {
-                    let tag = String(r[range]).replacingOccurrences(of: "[[GOTO:", with: "").replacingOccurrences(of: "]]", with: "")
-                    if let dest = AppDestination(rawValue: tag), dest != .nexus { router.aiTarget = dest }
-                    r = r.replacingOccurrences(of: #"\[\[GOTO:[a-z]+\]\]"#, with: "", options: .regularExpression)
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    messages[idx].text = r
-                }
+                let parsed = NexusActions.extract(messages[idx].text)
+                var shown = parsed.clean
+                var confirmations: [String] = []
+                for act in parsed.actions { if let c = NexusActions.apply(act, store: store) { confirmations.append(c) } }
+                if let g = parsed.goto, g != .nexus { router.aiTarget = g }
+                if !confirmations.isEmpty { shown += "\n\n" + confirmations.map { "✅ \($0)" }.joined(separator: "\n") }
+                messages[idx].text = shown.isEmpty ? "👍" : shown
             } catch {
                 messages[idx].text = "⚠️ \(error.localizedDescription)"
             }

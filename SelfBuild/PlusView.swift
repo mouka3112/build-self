@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct PlusView: View {
-    private let items: [AppDestination] = [.study, .hygiene, .finance, .wardrobe, .kitchen, .running, .music, .projects, .challenges, .capsule, .reports, .health, .safe, .notes, .settings]
+    private let items: [AppDestination] = [.study, .school, .lessons, .reminders, .hygiene, .finance, .wardrobe, .kitchen, .running, .music, .projects, .challenges, .capsule, .reports, .health, .safe, .notes, .settings]
 
     var body: some View {
         NavigationStack {
@@ -12,7 +12,7 @@ struct PlusView: View {
                         ForEach(items) { d in
                             NavigationLink { DestinationView(dest: d).hideKeyboardOnTap() } label: {
                                 HStack(spacing: 14) {
-                                    Image(systemName: d.icon).font(.title2).frame(width: 36)
+                                    Image(systemName: d.icon).font(.title2).foregroundStyle(d.color).frame(width: 36)
                                     Text(d.title).font(.headline)
                                     Spacer()
                                     Image(systemName: "chevron.right").foregroundStyle(.secondary)
@@ -41,6 +41,12 @@ struct StudyView: View {
             AppBackground()
             ScrollView {
                 VStack(spacing: 16) {
+                    NavigationLink { SchoolView().hideKeyboardOnTap() } label: {
+                        Label("Emploi du temps & contrôles", systemImage: "calendar").frame(maxWidth: .infinity, alignment: .leading).padding(16).glassCard(22)
+                    }.buttonStyle(PressStyle())
+                    NavigationLink { LessonsView().hideKeyboardOnTap() } label: {
+                        Label("Mes cours en photos", systemImage: "photo.stack.fill").frame(maxWidth: .infinity, alignment: .leading).padding(16).glassCard(22)
+                    }.buttonStyle(PressStyle())
                     VStack(alignment: .leading, spacing: 12) {
                         Label("Mode Lockdown", systemImage: "lock.fill").font(.headline)
                         Text("Écran verrouillé et concentré. Pour sortir : prouve tes devoirs avec une photo analysée par Nexus.")
@@ -220,6 +226,11 @@ struct FinanceView: View {
                     }
                     .frame(maxWidth: .infinity).padding(20).glassCard(28)
 
+                    NavigationLink { TutorsView().hideKeyboardOnTap() } label: {
+                        HStack { Label("Études · Cours particuliers (دروس خصوصية)", systemImage: "graduationcap.fill"); Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary) }
+                            .padding(16).glassCard(22)
+                    }.buttonStyle(PressStyle())
+
                     HStack(spacing: 10) {
                         Button { showIncome = true } label: { Label("Argent reçu", systemImage: "plus") }.buttonStyle(GlassButtonStyle())
                         Button { showPicker = true } label: { Label("Scanner", systemImage: "doc.text.viewfinder") }.buttonStyle(GlassButtonStyle())
@@ -371,6 +382,7 @@ struct SettingsView: View {
             }
             Section("Modèle IA (laisse vide = automatique)") {
                 TextField(GeminiClient.defaultModel, text: $model).textInputAutocapitalization(.never).autocorrectionDisabled()
+                if !gemini.activeModel.isEmpty { Text("Dernier modèle utilisé : \(gemini.activeModel)").font(.caption).foregroundStyle(.secondary) }
                 Toggle("Bruit d'ambiance en Lockdown", isOn: $autoNoise)
             }
             Section("Dynamic Island") {

@@ -53,11 +53,22 @@ extension AppStore {
 struct RingView: View {
     let value: Double, title: String, detail: String
     var size: CGFloat = 86
+    private var tint: Color {
+        switch title {
+        case "Muscu": return Color(red: 1.0, green: 0.62, blue: 0.26)
+        case "Protéines", "Nutrition": return Color(red: 0.42, green: 0.86, blue: 0.5)
+        case "Études": return Color(red: 0.45, green: 0.62, blue: 1.0)
+        case "Hygiène": return Color(red: 0.4, green: 0.85, blue: 0.95)
+        case "Défis": return Color(red: 1.0, green: 0.8, blue: 0.35)
+        case "Course": return Color(red: 1.0, green: 0.45, blue: 0.55)
+        default: return .white
+        }
+    }
     var body: some View {
         VStack(spacing: 6) {
             ZStack {
                 Circle().stroke(Color.white.opacity(0.15), lineWidth: 9)
-                Circle().trim(from: 0, to: min(1, max(0.001, value))).stroke(Color.white, style: StrokeStyle(lineWidth: 9, lineCap: .round)).rotationEffect(.degrees(-90))
+                Circle().trim(from: 0, to: min(1, max(0.001, value))).stroke(tint, style: StrokeStyle(lineWidth: 9, lineCap: .round)).rotationEffect(.degrees(-90))
                 Text("\(Int(min(1, value) * 100))%").font(.system(size: size * 0.22, weight: .bold, design: .rounded))
             }.frame(width: size, height: size)
             Text(title).font(.caption.weight(.semibold))

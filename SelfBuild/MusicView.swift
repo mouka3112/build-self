@@ -61,6 +61,8 @@ final class MusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published var noiseKind = NoiseGenerator.Kind.soft
     @Published var noiseVolume: Float = 0.6 { didSet { noise.volume = noiseVolume } }
     private var player: AVAudioPlayer?
+    /// Pendant la course : musique mélangée au coach vocal (la voix baisse la musique).
+    var runMode = false
     private let noise = NoiseGenerator()
 
     static var dir: URL {
@@ -73,7 +75,11 @@ final class MusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     private func activateSession() {
         // .longFormAudio + sans mixWithOthers : requis pour que le routage AirPlay (HomePod, Apple TV, enceintes) fonctionne.
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, policy: .longFormAudio, options: [])
+        if runMode {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        } else {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, policy: .longFormAudio, options: [])
+        }
         try? AVAudioSession.sharedInstance().setActive(true)
     }
 
@@ -106,6 +112,20 @@ final class MusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         player?.play()
         current = url; isPlaying = player != nil
     }
+
+    var trackTitles: [String] { tracks.map { $0.deletingPathExtension().lastPathComponent } }
+
+    /// Lance le titre qui correspond (ex : choisi par le coach IA). Renvoie false si introuvable.
+    @discardableResult
+    func play(title: String) -> Bool {
+        let t = title.lowercased()
+        guard let url = tracks.first(where: { $0.deletingPathExtension().lastPathComponent.lowercased() == t })
+                ?? tracks.first(where: { $0.deletingPathExtension().lastPathComponent.lowercased().contains(t) }) else { return false }
+        play(url); return true
+    }
+
+    /// Baisse la musique pendant que le coach parle.
+    func duck(_ on: Bool) { player?.setVolume(on ? 0.25 : 1.0, fadeDuration: 0.3) }
 
     func toggle() {
         guard let p = player else { if let f = tracks.first { play(f) }; return }

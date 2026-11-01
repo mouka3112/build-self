@@ -1,5 +1,7 @@
 import SwiftUI
 
+struct ClothingScan: Decodable { struct It: Decodable { let name: String; let category: String }; let items: [It] }
+
 struct WardrobeView: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var gemini: GeminiClient
@@ -8,6 +10,9 @@ struct WardrobeView: View {
     @State private var loading = false
     @State private var name = ""
     @State private var category = "Haut"
+    @State private var showPicker = false
+    @State private var scanning = false
+    @State private var scanMessage = ""
     private let categories = ["Haut", "Bas", "Veste", "Chaussures", "Autre"]
 
     var body: some View {
@@ -16,6 +21,14 @@ struct WardrobeView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     weatherCard
+                    VStack(spacing: 8) {
+                        Button { showPicker = true } label: { Label(scanning ? "Nexus regarde…" : "Photographier mes habits", systemImage: "camera.fill") }
+                            .buttonStyle(GlassButtonStyle(prominent: true)).disabled(scanning)
+                        Text("Une photo avec un ou plusieurs habits : Nexus les reconnaît et les ajoute tout seul (propres par défaut).").font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        if !scanMessage.isEmpty { Text(scanMessage).font(.footnote) }
+                    }
+                    .padding(16).glassCard(24)
+
                     VStack(spacing: 10) {
                         Picker("Catégorie", selection: $category) { ForEach(categories, id: \.self) { Text($0) } }.pickerStyle(.segmented)
                         HStack {
@@ -62,6 +75,29 @@ struct WardrobeView: View {
         }
         .navigationTitle("Garde-robe")
         .task { weather = await WeatherService.fetch() }
+        .photoPicker(isPresented: $showPicker) { scanClothes($0) }
+    }
+
+    private func scanClothes(_ img: UIImage) {
+        scanning = true; scanMessage = ""
+        Task {
+            do {
+                let r = try await gemini.json(ClothingScan.self, """
+                Sur cette photo, identifie chaque vêtement ou paire de chaussures (un élément par pièce distincte).
+                JSON uniquement : {"items":[{"name":"nom court avec couleur, ex : hoodie noir","category":"Haut|Bas|Veste|Chaussures|Autre"}]}
+                """, image: img)
+                var added = 0
+                for it in r.items where !it.name.isEmpty {
+                    let cat = categories.contains(it.category) ? it.category : "Autre"
+                    if !store.wardrobe.contains(where: { $0.name.lowercased() == it.name.lowercased() }) {
+                        store.wardrobe.append(ClothingItem(name: it.name, category: cat)); added += 1
+                    }
+                }
+                scanMessage = added == 0 ? "Aucun nouvel habit détecté." : "\(added) habit(s) ajouté(s) ✅"
+                Haptic.success()
+            } catch { scanMessage = error.localizedDescription }
+            scanning = false
+        }
     }
 
     private var weatherCard: some View {

@@ -54,6 +54,8 @@ struct WorkoutView: View {
     }
 }
 
+struct AdaptResult: Decodable { let weight: Double; let reps: Int; let why: String }
+
 struct ExerciseCard: View {
     let ex: Exercise
     @EnvironmentObject var store: AppStore
@@ -64,6 +66,9 @@ struct ExerciseCard: View {
     @State private var tips = ""
     @State private var loadingTips = false
     @State private var web: WebLink?
+    @State private var effort = 2
+    @State private var aiNote = ""
+    @State private var adapting = false
 
     var body: some View {
         let sug = store.suggestion(for: ex)
@@ -95,6 +100,21 @@ struct ExerciseCard: View {
                     Text("\(fmtKg(s.weight)) kg × \(s.reps)").monospacedDigit()
                 }.font(.subheadline)
             }
+            if !aiNote.isEmpty { Label(aiNote, systemImage: "sparkles").font(.footnote).padding(10).glassCard(14) }
+            HStack(spacing: 8) {
+                Text("Effort").font(.caption).foregroundStyle(.secondary)
+                ForEach([(1, "😌"), (2, "😅"), (3, "🥵")], id: \.0) { e in
+                    Button { effort = e.0 } label: {
+                        Text(e.1).font(.title3).padding(6)
+                            .background { if effort == e.0 { Circle().fill(Color.white.opacity(0.25)) } }
+                    }.buttonStyle(.plain)
+                }
+                Spacer()
+                Button { adapt() } label: {
+                    Label(adapting ? "…" : "Nexus adapte", systemImage: "wand.and.stars").font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10).padding(.vertical, 6).glassCard(12)
+                }.buttonStyle(PressStyle()).disabled(adapting)
+            }
             HStack(spacing: 10) {
                 field("kg", $weight, .decimalPad)
                 field("reps", $reps, .numberPad)
@@ -116,10 +136,33 @@ struct ExerciseCard: View {
 
     private func validate() {
         guard let w = Double(weight.replacingOccurrences(of: ",", with: ".")), let r = Int(reps), r > 0 else { Haptic.warn(); return }
-        store.sets.append(SetRecord(date: .now, exercise: ex.name, weight: w, reps: r))
+        store.sets.append(SetRecord(date: .now, exercise: ex.name, weight: w, reps: r, effort: effort))
         reps = ""
         rest.start(90)
         Haptic.success()
+        if !gemini.apiKey.isEmpty { adapt() }          // Nexus prépare la prochaine série pendant le repos
+    }
+
+    /// Nexus choisit la charge et les répétitions à partir de ton historique et de ton effort ressenti.
+    private func adapt() {
+        adapting = true
+        let hist = store.sets.filter { $0.exercise == ex.name }.sorted { $0.date > $1.date }.prefix(14).map { s in
+            "\(s.date.formatted(date: .abbreviated, time: .omitted)) : \(fmtKg(s.weight)) kg × \(s.reps)" + (s.effort.map { " (effort \($0)/3)" } ?? "")
+        }.joined(separator: " ; ")
+        let today = store.todaySets(ex.name).count
+        Task {
+            do {
+                let r = try await gemini.json(AdaptResult.self, """
+                Exercice : \(ex.name). Objectif : \(ex.sets) séries de \(ex.repLabel) répétitions (hypertrophie), débutant de 15 ans, 1m83.
+                Séries déjà faites aujourd'hui : \(today). Historique récent : \(hist.isEmpty ? "aucun (première fois)" : hist).
+                Effort : 1 = facile, 2 = correct, 3 = très dur. Règles : progression prudente (+2,5 kg max par séance), si l'effort est 3 deux fois de suite ou si les reps tombent sous le bas de la fourchette, garde ou baisse la charge, technique d'abord.
+                Propose la charge et les répétitions pour la PROCHAINE série. JSON uniquement : {"weight": kg en nombre, "reps": répétitions visées, "why": "une phrase courte"}
+                """, store: store)
+                weight = fmtKg(r.weight); reps = String(r.reps)
+                aiNote = "Nexus : \(fmtKg(r.weight)) kg × \(r.reps) – \(r.why)"
+            } catch { aiNote = error.localizedDescription }
+            adapting = false
+        }
     }
 
     private func loadTips() {

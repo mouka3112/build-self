@@ -37,12 +37,32 @@ extension View {
     }
 }
 
+extension AppDestination {
+    /// Petite touche de couleur par module (discrète).
+    var color: Color {
+        switch self {
+        case .muscu: return Color(red: 1.0, green: 0.62, blue: 0.26)
+        case .nutrition, .kitchen: return Color(red: 0.42, green: 0.86, blue: 0.5)
+        case .study, .school, .lessons, .tutors: return Color(red: 0.45, green: 0.62, blue: 1.0)
+        case .hygiene: return Color(red: 0.4, green: 0.85, blue: 0.95)
+        case .finance: return Color(red: 0.4, green: 0.9, blue: 0.7)
+        case .health: return Color(red: 1.0, green: 0.45, blue: 0.55)
+        case .running: return Color(red: 1.0, green: 0.85, blue: 0.3)
+        case .music: return Color(red: 0.75, green: 0.5, blue: 1.0)
+        case .reports, .challenges: return Color(red: 1.0, green: 0.8, blue: 0.35)
+        case .reminders: return Color(red: 1.0, green: 0.55, blue: 0.4)
+        case .safe: return Color(red: 0.6, green: 0.6, blue: 1.0)
+        default: return .white
+        }
+    }
+}
+
 struct AppBackground: View {
     var body: some View {
         ZStack {
             Color.black
-            RadialGradient(colors: [.white.opacity(0.12), .clear], center: .topTrailing, startRadius: 0, endRadius: 460)
-            RadialGradient(colors: [.white.opacity(0.06), .clear], center: .bottomLeading, startRadius: 0, endRadius: 380)
+            RadialGradient(colors: [Color(red: 0.4, green: 0.45, blue: 1.0).opacity(0.22), .clear], center: .topTrailing, startRadius: 0, endRadius: 460)
+            RadialGradient(colors: [Color(red: 0.2, green: 0.8, blue: 0.7).opacity(0.12), .clear], center: .bottomLeading, startRadius: 0, endRadius: 380)
         }
         .ignoresSafeArea()
     }
@@ -84,7 +104,7 @@ struct GaugeBar: View {
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.white.opacity(0.12))
-                    Capsule().fill(Color.white).frame(width: g.size.width * min(1, value / max(goal, 1)))
+                    Capsule().fill(title == "Calories" ? Color(red: 1.0, green: 0.62, blue: 0.26) : title == "Protéines" ? Color(red: 0.42, green: 0.86, blue: 0.5) : Color.white).frame(width: g.size.width * min(1, value / max(goal, 1)))
                 }
             }.frame(height: 8)
         }

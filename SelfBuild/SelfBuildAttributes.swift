@@ -7,6 +7,8 @@ struct SelfBuildAttributes: ActivityAttributes {
         var title: String
         var subtitle: String
         var endDate: Date
+        /// Pose de Nexus : idle, wave, lookL, lookR, blink, happy
+        var pose: String = "idle"
     }
     var mode: String   // "focus" ou "workout"
 }

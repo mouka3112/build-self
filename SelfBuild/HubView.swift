@@ -24,6 +24,13 @@ struct HubView: View {
                         stats
                         Button { showSwitch = true } label: { Label("Je fais autre chose", systemImage: "arrow.triangle.branch") }
                             .buttonStyle(GlassButtonStyle())
+                        if !store.pending.isEmpty {
+                            Button {
+                                router.pendingPrompt = "Réorganise le reste de ma journée en fonction de l'heure actuelle et de ce que j'ai déjà fait."
+                                router.selectedTab = 1
+                            } label: { Label("Réorganiser avec Nexus", systemImage: "sparkles") }
+                                .buttonStyle(GlassButtonStyle())
+                        }
                     }
                     .padding()
                 }
@@ -53,24 +60,41 @@ struct HubView: View {
     }
 
     private func currentCard(_ t: TaskItem) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("EN COURS").font(.caption.weight(.semibold)).tracking(2).foregroundStyle(.secondary)
-            HStack(spacing: 14) {
-                Image(systemName: t.icon).font(.system(size: 34)).frame(width: 44)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(t.title).font(.system(.title2, design: .rounded).weight(.bold))
-                    Text("\(timeString(t.start)) – \(timeString(t.end))").foregroundStyle(.secondary)
+        TimelineView(.periodic(from: .now, by: 20)) { _ in
+            let now = store.minutesNow
+            let upcoming = t.start > now + 2
+            let flexible = t.kind != .school && t.kind != .sleep
+            VStack(alignment: .leading, spacing: 14) {
+                Text(upcoming ? "À VENIR · dans \(t.start - now) min" : "EN COURS")
+                    .font(.caption.weight(.semibold)).tracking(2).foregroundStyle(.secondary)
+                HStack(spacing: 14) {
+                    Image(systemName: t.icon).font(.system(size: 34)).frame(width: 44)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(t.title).font(.system(.title2, design: .rounded).weight(.bold))
+                        Text("\(timeString(t.start)) – \(timeString(t.end))").foregroundStyle(.secondary)
+                    }
+                }
+                if upcoming && flexible {
+                    HStack(spacing: 10) {
+                        Button { store.startNow(t); Haptic.tap() } label: { Label("Commencer maintenant", systemImage: "play.fill") }
+                            .buttonStyle(GlassButtonStyle(prominent: true))
+                        Button { finish(t) } label: { Image(systemName: "checkmark") }
+                            .buttonStyle(GlassButtonStyle()).frame(width: 70)
+                    }
+                } else if upcoming {
+                    Text("Rien à faire pour l'instant, profite !").font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 10) {
+                        if t.kind != .sleep && t.kind != .school && t.kind != .hygiene {
+                            Button { start(t) } label: { Text(startLabel(t)) }.buttonStyle(GlassButtonStyle())
+                        }
+                        Button { finish(t) } label: { Label("Terminé", systemImage: "checkmark") }
+                            .buttonStyle(GlassButtonStyle(prominent: true))
+                    }
                 }
             }
-            HStack(spacing: 10) {
-                if t.kind != .sleep && t.kind != .school && t.kind != .hygiene {
-                    Button { start(t) } label: { Text(startLabel(t)) }.buttonStyle(GlassButtonStyle())
-                }
-                Button { finish(t) } label: { Label("Terminé", systemImage: "checkmark") }
-                    .buttonStyle(GlassButtonStyle(prominent: true))
-            }
+            .padding(20).frame(maxWidth: .infinity, alignment: .leading).glassCard(30)
         }
-        .padding(20).frame(maxWidth: .infinity, alignment: .leading).glassCard(30)
     }
 
     private func nextCard(_ t: TaskItem) -> some View {
