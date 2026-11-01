@@ -361,6 +361,7 @@ struct SettingsView: View {
     @AppStorage("geminiKey") private var key = ""
     @AppStorage("geminiModel") private var model = ""
     @AppStorage("autoNoise") private var autoNoise = true
+    @ObservedObject private var live = LiveActivityManager.shared
     @State private var info = ""
 
     var body: some View {
@@ -371,6 +372,13 @@ struct SettingsView: View {
             Section("Modèle IA (laisse vide = automatique)") {
                 TextField(GeminiClient.defaultModel, text: $model).textInputAutocapitalization(.never).autocorrectionDisabled()
                 Toggle("Bruit d'ambiance en Lockdown", isOn: $autoNoise)
+            }
+            Section("Dynamic Island") {
+                Text(live.diagnostic).font(.footnote)
+                Button("Tester la Dynamic Island (2 min)") {
+                    LiveActivityManager.shared.start(mode: "focus", title: "Test SELF BUILD", subtitle: "Quitte l'app pour la voir", minutes: 2)
+                }
+                Button("Arrêter") { LiveActivityManager.shared.end() }
             }
             Section("Objectifs quotidiens") {
                 Stepper(value: $store.calorieGoal, in: 1500...5000, step: 100) { Text("Calories : \(Int(store.calorieGoal)) kcal") }

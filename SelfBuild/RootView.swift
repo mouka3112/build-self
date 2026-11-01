@@ -8,15 +8,18 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        TabView(selection: $router.selectedTab) {
-            HubView().tabItem { Label("Hub", systemImage: "scope") }.tag(0)
-            NexusView().tabItem { Label("Nexus", systemImage: "sparkles") }.tag(1)
-            WorkoutView().tabItem { Label("Muscu", systemImage: "dumbbell.fill") }.tag(2)
-            NutritionView().tabItem { Label("Nutrition", systemImage: "fork.knife") }.tag(3)
-            PlusView().tabItem { Label("Plus", systemImage: "square.grid.2x2.fill") }.tag(4)
-        }
-        .overlay(alignment: .bottomTrailing) {
-            SmartButton().padding(.trailing, 14).padding(.bottom, rest.remaining > 0 ? 170 : 96)
+        ZStack {
+            AppBackground()
+            VStack(spacing: 0) {
+                SmartButton()
+                TabView(selection: $router.selectedTab) {
+                    HubView().tabItem { Label("Hub", systemImage: "scope") }.tag(0)
+                    NexusView().tabItem { Label("Nexus", systemImage: "sparkles") }.tag(1)
+                    WorkoutView().tabItem { Label("Muscu", systemImage: "dumbbell.fill") }.tag(2)
+                    NutritionView().tabItem { Label("Nutrition", systemImage: "fork.knife") }.tag(3)
+                    PlusView().tabItem { Label("Plus", systemImage: "square.grid.2x2.fill") }.tag(4)
+                }
+            }
         }
         .hideKeyboardOnTap()
         .sheet(item: $router.sheet) { d in

@@ -9,6 +9,16 @@ struct Reminder: Decodable { let minute: Int; let title: String; let body: Strin
 @MainActor
 final class GeminiClient: ObservableObject {
     @Published var isThinking = false
+    private var inflight = 0 { didSet { isThinking = inflight > 0 } }
+
+    /// Session dédiée : 120 s d'inactivité max, 3 min au total, attend le réseau au lieu d'échouer.
+    private let session: URLSession = {
+        let c = URLSessionConfiguration.default
+        c.timeoutIntervalForRequest = 120
+        c.timeoutIntervalForResource = 180
+        c.waitsForConnectivity = true
+        return URLSession(configuration: c)
+    }()
 
     static let defaultModel = "gemini-3.8-flash"
     /// Modifiable dans Plus → Réglages si Google renomme le modèle.
@@ -29,17 +39,63 @@ final class GeminiClient: ObservableObject {
     }
 
     // MARK: API publique
-    func chat(history: [ChatMessage], store: AppStore) async throws -> String {
-        let msgs = Array(history.drop(while: { !$0.isUser }).suffix(20))
-        let withImages = Set(msgs.filter { $0.image != nil }.suffix(2).map(\.id))
-        let contents: [[String: Any]] = msgs.map { m -> [String: Any] in
-            var parts: [[String: Any]] = [["text": m.text.isEmpty ? "(photo)" : m.text]]
-            if withImages.contains(m.id), let b64 = m.image?.jpegBase64() {
+    private func chatContents(_ history: [ChatMessage]) -> [[String: Any]] {
+        let msgs = Array(history.drop(while: { !$0.isUser }).suffix(10))
+        let withImages = Set(msgs.filter { $0.image != nil }.suffix(1).map(\.id))
+        return msgs.map { m -> [String: Any] in
+            let t = String(m.text.prefix(1500))
+            var parts: [[String: Any]] = [["text": t.isEmpty ? "(photo)" : t]]
+            if withImages.contains(m.id), let b64 = m.image?.jpegBase64(maxSide: 1024) {
                 parts.append(["inline_data": ["mime_type": "image/jpeg", "data": b64]])
             }
             return ["role": m.isUser ? "user" : "model", "parts": parts]
         }
-        return try await generate(system: systemPrompt(store), contents: contents)
+    }
+
+    /// Réponse complète d'un coup (non utilisée par le chat, qui est en streaming).
+    func chat(history: [ChatMessage], store: AppStore) async throws -> String {
+        try await generate(system: systemPrompt(store), contents: chatContents(history))
+    }
+
+    /// Chat en streaming : le texte arrive mot par mot via `onDelta` (réponse perçue beaucoup plus rapide).
+    func streamChat(history: [ChatMessage], store: AppStore, onDelta: @escaping (String) -> Void) async throws {
+        guard !apiKey.isEmpty else { throw GeminiError.noKey }
+        let contents = chatContents(history)
+        let system = systemPrompt(store)
+        var attempt = 0
+        var useThinking = true
+        while true {
+            do {
+                let req = try makeRequest(stream: true, system: system, contents: contents, json: false, thinking: useThinking, maxTokens: 1500)
+                inflight += 1
+                defer { inflight -= 1 }
+                let (bytes, resp) = try await session.bytes(for: req)
+                guard let http = resp as? HTTPURLResponse else { throw GeminiError.bad("Réponse réseau invalide.") }
+                if http.statusCode != 200 {
+                    var body = ""
+                    for try await l in bytes.lines { body += l; if body.count > 400 { break } }
+                    if http.statusCode == 400, useThinking, body.lowercased().contains("thinking") { useThinking = false; continue }
+                    if [429, 500, 503].contains(http.statusCode), attempt < 2 {
+                        attempt += 1; try await Task.sleep(for: .seconds(Double(attempt) * 2)); continue
+                    }
+                    throw GeminiError.bad("Erreur Gemini \(http.statusCode) : \(body.prefix(180))")
+                }
+                var got = false
+                for try await line in bytes.lines {
+                    guard line.hasPrefix("data:") else { continue }
+                    let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                    guard let d = payload.data(using: .utf8), let r = try? JSONDecoder().decode(GenResponse.self, from: d) else { continue }
+                    let t = r.candidates?.first?.content?.parts?.compactMap(\.text).joined() ?? ""
+                    if !t.isEmpty { got = true; onDelta(t) }
+                }
+                if !got { throw GeminiError.bad("Réponse vide de Gemini.") }
+                return
+            } catch let e as URLError where (e.code == .timedOut || e.code == .networkConnectionLost) && attempt < 2 {
+                attempt += 1
+                try? await Task.sleep(for: .seconds(2))
+                continue
+            }
+        }
     }
 
     /// Texte libre (avec photo optionnelle).
@@ -135,31 +191,62 @@ final class GeminiClient: ObservableObject {
         let candidates: [Cand]?
     }
 
-    private func generate(system: String?, contents: [[String: Any]], json: Bool = false) async throws -> String {
-        guard !apiKey.isEmpty else { throw GeminiError.noKey }
-        var comps = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models/\(modelName):generateContent")!
-        comps.queryItems = [URLQueryItem(name: "key", value: apiKey)]
-        var body: [String: Any] = ["contents": contents]
+    /// Gemini 3 réfléchit à fond par défaut (lent) : on demande un raisonnement léger.
+    private func thinkingConfig() -> [String: Any]? {
+        let m = modelName.lowercased()
+        if m.contains("gemini-3") { return ["thinkingLevel": "low"] }
+        if m.contains("2.5") && m.contains("flash") { return ["thinkingBudget": 0] }
+        return nil
+    }
+
+    private func makeRequest(stream: Bool, system: String?, contents: [[String: Any]], json: Bool, thinking: Bool, maxTokens: Int) throws -> URLRequest {
+        let method = stream ? "streamGenerateContent" : "generateContent"
+        var comps = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models/\(modelName):\(method)")!
+        var items = [URLQueryItem(name: "key", value: apiKey)]
+        if stream { items.append(URLQueryItem(name: "alt", value: "sse")) }
+        comps.queryItems = items
+        var gen: [String: Any] = ["maxOutputTokens": maxTokens]
+        if json { gen["responseMimeType"] = "application/json" }
+        if thinking, let t = thinkingConfig() { gen["thinkingConfig"] = t }
+        var body: [String: Any] = ["contents": contents, "generationConfig": gen]
         if let system { body["systemInstruction"] = ["parts": [["text": system]]] }
-        if json { body["generationConfig"] = ["responseMimeType": "application/json"] }
         var req = URLRequest(url: comps.url!)
         req.httpMethod = "POST"
-        req.timeoutInterval = 60
+        req.timeoutInterval = 120
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return req
+    }
 
-        isThinking = true
-        defer { isThinking = false }
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw GeminiError.bad("Réponse réseau invalide.") }
-        guard http.statusCode == 200 else {
-            let msg = String(data: data, encoding: .utf8) ?? ""
-            throw GeminiError.bad("Erreur Gemini \(http.statusCode) : \(msg.prefix(180))")
+    private func generate(system: String?, contents: [[String: Any]], json: Bool = false) async throws -> String {
+        guard !apiKey.isEmpty else { throw GeminiError.noKey }
+        var attempt = 0
+        var useThinking = true
+        while true {
+            do {
+                let req = try makeRequest(stream: false, system: system, contents: contents, json: json, thinking: useThinking, maxTokens: 2000)
+                inflight += 1
+                defer { inflight -= 1 }
+                let (data, resp) = try await session.data(for: req)
+                guard let http = resp as? HTTPURLResponse else { throw GeminiError.bad("Réponse réseau invalide.") }
+                if http.statusCode != 200 {
+                    let msg = String(data: data, encoding: .utf8) ?? ""
+                    if http.statusCode == 400, useThinking, msg.lowercased().contains("thinking") { useThinking = false; continue }
+                    if [429, 500, 503].contains(http.statusCode), attempt < 2 {
+                        attempt += 1; try await Task.sleep(for: .seconds(Double(attempt) * 2)); continue
+                    }
+                    throw GeminiError.bad("Erreur Gemini \(http.statusCode) : \(msg.prefix(180))")
+                }
+                let r = try JSONDecoder().decode(GenResponse.self, from: data)
+                let text = r.candidates?.first?.content?.parts?.compactMap(\.text).joined() ?? ""
+                if text.isEmpty { throw GeminiError.bad("Réponse vide de Gemini.") }
+                return text
+            } catch let e as URLError where (e.code == .timedOut || e.code == .networkConnectionLost) && attempt < 2 {
+                attempt += 1
+                try? await Task.sleep(for: .seconds(2))
+                continue
+            }
         }
-        let r = try JSONDecoder().decode(GenResponse.self, from: data)
-        let text = r.candidates?.first?.content?.parts?.compactMap(\.text).joined() ?? ""
-        if text.isEmpty { throw GeminiError.bad("Réponse vide de Gemini.") }
-        return text
     }
 }
 

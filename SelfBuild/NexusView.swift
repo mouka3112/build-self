@@ -18,7 +18,6 @@ struct NexusView: View {
                     ScrollView {
                         LazyVStack(spacing: 10) {
                             ForEach(messages) { m in bubble(m).id(m.id) }
-                            if gemini.isThinking { Text("Nexus réfléchit…").font(.caption).foregroundStyle(.secondary) }
                         }.padding()
                     }
                     .scrollDismissesKeyboard(.interactively)
@@ -43,7 +42,7 @@ struct NexusView: View {
                 if let img = m.image {
                     Image(uiImage: img).resizable().scaledToFit().frame(maxWidth: 200).clipShape(RoundedRectangle(cornerRadius: 14))
                 }
-                if !m.text.isEmpty { Text(m.text) }
+                if !m.text.isEmpty { Text(m.text) } else if !m.isUser { ProgressView().tint(.white) }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             .foregroundStyle(m.isUser ? Color.black : Color.white)
@@ -77,22 +76,29 @@ struct NexusView: View {
     }
 
     private func send(_ text: String) {
+        guard !gemini.isThinking else { return }          // une seule requête à la fois
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty || attached != nil else { return }
         messages.append(ChatMessage(isUser: true, text: t, image: attached))
         input = ""; attached = nil
+        let history = messages                             // sans la bulle vide de réponse
+        messages.append(ChatMessage(isUser: false, text: ""))
+        let idx = messages.count - 1
         Task {
             do {
-                var r = try await gemini.chat(history: messages, store: store)
+                try await gemini.streamChat(history: history, store: store) { delta in
+                    messages[idx].text += delta
+                }
+                var r = messages[idx].text
                 if let range = r.range(of: #"\[\[GOTO:([a-z]+)\]\]"#, options: .regularExpression) {
                     let tag = String(r[range]).replacingOccurrences(of: "[[GOTO:", with: "").replacingOccurrences(of: "]]", with: "")
                     if let dest = AppDestination(rawValue: tag), dest != .nexus { router.aiTarget = dest }
                     r = r.replacingOccurrences(of: #"\[\[GOTO:[a-z]+\]\]"#, with: "", options: .regularExpression)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
+                    messages[idx].text = r
                 }
-                messages.append(ChatMessage(isUser: false, text: r))
             } catch {
-                messages.append(ChatMessage(isUser: false, text: "⚠️ \(error.localizedDescription)"))
+                messages[idx].text = "⚠️ \(error.localizedDescription)"
             }
         }
     }

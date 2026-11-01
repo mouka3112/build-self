@@ -49,6 +49,10 @@ jobs:
           name: build-log
           path: build.log
 
+      - name: Vérifier que l'extension Dynamic Island est dans l'app
+        run: |
+          ls -R build/Build/Products/Release-iphoneos/SelfBuild.app/PlugIns || (echo "EXTENSION ABSENTE" && exit 1)
+
       - name: Fabriquer le .ipa
         run: |
           mkdir -p Payload

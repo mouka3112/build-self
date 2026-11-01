@@ -46,9 +46,35 @@ func youtubeSearch(_ query: String) -> URL? {
 // MARK: AirPlay
 struct AirPlayPicker: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
-        let v = AVRoutePickerView(); v.tintColor = .white; v.activeTintColor = .white; return v
+        let v = AVRoutePickerView()
+        v.tintColor = .clear              // l'icône visible est dessinée en SwiftUI ; le picker capte le toucher
+        v.activeTintColor = .clear
+        v.prioritizesVideoDevices = false
+        v.backgroundColor = .clear
+        return v
     }
     func updateUIView(_ v: AVRoutePickerView, context: Context) {}
+}
+
+/// Bouton AirPlay : icône visible + picker système par-dessus, zone de toucher de 56 pt.
+struct AirPlayButton: View {
+    @State private var route = AirPlayButton.currentRoute()
+    static func currentRoute() -> String {
+        AVAudioSession.sharedInstance().currentRoute.outputs.first?.portName ?? "iPhone"
+    }
+    var body: some View {
+        VStack(spacing: 2) {
+            ZStack {
+                Image(systemName: "airplayaudio").font(.title2).foregroundStyle(.white)
+                AirPlayPicker().frame(width: 56, height: 56)
+            }
+            .frame(width: 56, height: 56)
+            Text(route).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
+            route = Self.currentRoute()
+        }
+    }
 }
 
 // MARK: Face ID
@@ -101,16 +127,16 @@ enum WeatherService {
     }
 }
 
-// MARK: Bouton dynamique toujours présent
+// MARK: Barre « prochaine action » : une bande fine en haut, jamais au-dessus d'un autre bouton
 struct SmartButton: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var router: Router
 
     private var target: (dest: AppDestination, label: String) {
-        if let a = router.aiTarget { return (a, "Nexus → \(a.title)") }
+        if let a = router.aiTarget { return (a, "Nexus te conseille : \(a.title)") }
         guard let t = store.pending.first else { return (.nexus, "Demander à Nexus") }
         switch t.kind {
-        case .workout: return (.muscu, "Séance")
+        case .workout: return (.muscu, "Séance en cours")
         case .meal: return (.nutrition, "Repas")
         case .study: return (.study, "Étudier")
         case .school: return (.study, "Devoirs")
@@ -128,14 +154,16 @@ struct SmartButton: View {
                 HStack(spacing: 8) {
                     Image(systemName: t.dest.icon)
                     Text(t.label).lineLimit(1)
+                    Image(systemName: "chevron.right").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
                 }
-                .font(.system(.subheadline, design: .rounded).weight(.bold))
+                .font(.system(.subheadline, design: .rounded).weight(.semibold))
                 .foregroundStyle(.white)
-                .padding(.horizontal, 16).padding(.vertical, 12)
-                .glassCard(26)
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .glassCard(20)
             }
             .buttonStyle(PressStyle())
-            .shadow(color: .white.opacity(0.15), radius: 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
         }
     }
 }

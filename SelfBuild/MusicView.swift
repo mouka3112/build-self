@@ -72,7 +72,8 @@ final class MusicManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     override init() { super.init(); reload() }
 
     private func activateSession() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        // .longFormAudio + sans mixWithOthers : requis pour que le routage AirPlay (HomePod, Apple TV, enceintes) fonctionne.
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, policy: .longFormAudio, options: [])
         try? AVAudioSession.sharedInstance().setActive(true)
     }
 
@@ -144,7 +145,7 @@ struct MusicView: View {
                         HStack(spacing: 30) {
                             Button { music.toggle() } label: { Image(systemName: music.isPlaying ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 54)) }
                             Button { music.next() } label: { Image(systemName: "forward.fill").font(.title) }
-                            AirPlayPicker().frame(width: 44, height: 44)
+                            AirPlayButton()
                         }
                     }
                     .frame(maxWidth: .infinity).padding(20).glassCard(28)
