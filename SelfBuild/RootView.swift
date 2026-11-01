@@ -59,6 +59,8 @@ final class Router: ObservableObject {
     @Published var sheet: AppDestination?
     @Published var aiTarget: AppDestination?
     @Published var wrapUp: WrapUpRequest?
+    /// Dernière modification faite par Nexus (affichée dans le Hub).
+    @Published var lastAction: String?
 
     func go(_ d: AppDestination) {
         if let t = d.tabIndex { sheet = nil; selectedTab = t } else { sheet = d }

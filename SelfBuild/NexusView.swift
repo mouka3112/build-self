@@ -93,6 +93,7 @@ struct NexusView: View {
                 var shown = parsed.clean
                 var confirmations: [String] = []
                 for act in parsed.actions { if let c = NexusActions.apply(act, store: store) { confirmations.append(c) } }
+                if !confirmations.isEmpty { router.lastAction = confirmations.joined(separator: " · ") }
                 if let g = parsed.goto, g != .nexus { router.aiTarget = g }
                 if !confirmations.isEmpty { shown += "\n\n" + confirmations.map { "✅ \($0)" }.joined(separator: "\n") }
                 messages[idx].text = shown.isEmpty ? "👍" : shown

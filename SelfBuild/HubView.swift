@@ -15,6 +15,14 @@ struct HubView: View {
                 ScrollView {
                     VStack(spacing: 16) {
                         header
+                        if let a = router.lastAction {
+                            HStack(alignment: .top, spacing: 8) {
+                                Text("✅ Nexus a mis à jour :").font(.caption.weight(.semibold))
+                                Text(a).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                                Button { router.lastAction = nil } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                            }
+                            .padding(12).glassCard(18)
+                        }
                         if let current = store.pending.first {
                             currentCard(current)
                             if let next = store.pending.dropFirst().first { nextCard(next) }
