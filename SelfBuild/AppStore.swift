@@ -16,10 +16,17 @@ private struct Snapshot: Codable {
     var hygieneLog: [HygieneLog]?
     var tutors: [Tutor]?; var tutorSessions: [TutorSession]?; var exams: [ExamItem]?
     var timetable: [TimetableEntry]?; var reminders: [UserReminder]?; var lessons: [LessonPhoto]?
+    // v3
+    var profile: UserProfile?; var journal: [JournalEntry]?
 }
 
+/// UNIQUE source de vérité. Les vues lisent cet état ; toute modification « métier »
+/// passe par `engine.apply(_:)` (ActionEngine), qu'elle vienne de l'UI, de Nexus ou d'une notification.
 @MainActor
 final class AppStore: ObservableObject {
+    /// Pour les délégués système (notifications) qui doivent rejoindre le moteur d'actions.
+    static weak var current: AppStore?
+
     @Published var tasks: [TaskItem] = []
     @Published var tasksDate: Date = .distantPast
     @Published var sets: [SetRecord] = []
@@ -51,9 +58,13 @@ final class AppStore: ObservableObject {
     @Published var timetable: [TimetableEntry] = []
     @Published var reminders: [UserReminder] = []
     @Published var lessons: [LessonPhoto] = []
+    @Published var profile: UserProfile?
+    @Published var journal: [JournalEntry] = []
+
+    private(set) lazy var engine = ActionEngine(store: self)
 
     private var bag = Set<AnyCancellable>()
-    private let key = "selfbuild.snapshot.v1"
+    private static let legacyKey = "selfbuild.snapshot.v1"
 
     init() {
         load()
@@ -62,14 +73,30 @@ final class AppStore: ObservableObject {
             .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.save() }
             .store(in: &bag)
+        AppStore.current = self
     }
 
-    // MARK: Dérivés
-    /// Tâches à venir. Un cours dont l'heure de fin est passée disparaît tout seul.
-    var pending: [TaskItem] {
-        let now = minutesNow
-        return tasks.filter { !$0.done && !($0.kind == .school && $0.end <= now) }.sorted { $0.start < $1.start }
+    // MARK: Profil
+    var needsOnboarding: Bool { profile == nil }
+    var profileOrDefault: UserProfile { profile ?? UserProfile() }
+    var firstName: String { profile?.firstName.trimmingCharacters(in: .whitespaces) ?? "" }
+    var displayName: String { firstName.isEmpty ? "toi" : firstName }
+    var currency: String { profile?.currency ?? "TND" }
+    var planLimit: Int { Planner.limit(bed: profileOrDefault.bedMinute) }
+
+    func completeOnboarding(_ p: UserProfile, kcal: Double, protein: Double) {
+        profile = p
+        calorieGoal = kcal
+        proteinGoal = protein
+        resetToday()
+        save()
     }
+
+    // MARK: Dérivés (lus en direct par le Hub)
+    var minutesNow: Int { Fmt.minutesOf(.now) }
+    /// Tâches encore à faire (les cours terminés et les tâches manquées sont exclus).
+    var pending: [TaskItem] { Planner.active(tasks, now: minutesNow) }
+    var missedTasks: [TaskItem] { Planner.missed(tasks, now: minutesNow) }
     var pendingHomework: [Homework] { homework.filter { !$0.done }.sorted { $0.due < $1.due } }
     var todayFoods: [FoodEntry] { foods.filter { Calendar.current.isDateInToday($0.date) } }
     var kcalToday: Double { todayFoods.reduce(0) { $0 + $1.kcal } }
@@ -79,30 +106,53 @@ final class AppStore: ObservableObject {
         txns.filter { $0.amount < 0 && Calendar.current.isDate($0.date, equalTo: .now, toGranularity: .month) }
             .reduce(0) { $0 - $1.amount }
     }
-    var minutesNow: Int {
-        let c = Calendar.current.dateComponents([.hour, .minute], from: .now)
-        return (c.hour ?? 0) * 60 + (c.minute ?? 0)
-    }
     var allFoodCards: [FoodCard] { FoodCard.all + customFoods }
     var challengesToday: [Challenge] { challenges.filter { Calendar.current.isDateInToday($0.date) } }
     var upcomingExams: [ExamItem] {
         let today = Calendar.current.startOfDay(for: .now)
         return exams.filter { $0.date >= today }.sorted { $0.date < $1.date }
     }
+    var waterToday: Int {
+        healthLog.filter { $0.kind == "Eau" && Calendar.current.isDateInToday($0.date) }.count * 250
+    }
+    var hygieneDoneCount: Int { HygieneHabit.allCases.filter { hygieneDone($0) }.count }
+    var todayWorkout: TaskItem? { tasks.first { $0.kind == .workout } }
+
+    /// Prochain cours de l'emploi du temps (aujourd'hui après maintenant, sinon les jours suivants).
+    var nextClass: (entry: TimetableEntry, date: Date)? {
+        guard !timetable.isEmpty else { return nil }
+        let cal = Calendar.current
+        for offset in 0..<8 {
+            guard let day = cal.date(byAdding: .day, value: offset, to: cal.startOfDay(for: .now)) else { continue }
+            let wd = cal.component(.weekday, from: day)
+            let list = timetable.filter { $0.weekday == wd && (offset > 0 || $0.start > minutesNow) }.sorted { $0.start < $1.start }
+            if let e = list.first { return (e, Fmt.dateAt(minute: e.start, on: day)) }
+        }
+        return nil
+    }
+    /// Prochaine séance de cours particulier (tous profs confondus).
+    var nextTutor: (tutor: Tutor, date: Date)? {
+        let cal = Calendar.current
+        var best: (Tutor, Date)?
+        for t in tutors {
+            var comps = DateComponents(); comps.weekday = t.weekday; comps.hour = t.hour; comps.minute = t.minute
+            let ref = Date().addingTimeInterval(-3600)   // une séance en cours compte encore
+            guard let d = cal.nextDate(after: ref, matching: comps, matchingPolicy: .nextTime) else { continue }
+            if best == nil || d < best!.1 { best = (t, d) }
+        }
+        return best.map { (tutor: $0.0, date: $0.1) }
+    }
 
     // MARK: Hygiène
     func hygieneDone(_ h: HygieneHabit, on d: Date = .now) -> Bool {
         hygieneLog.contains { $0.habit == h.rawValue && Calendar.current.isDate($0.date, inSameDayAs: d) }
     }
+    /// Utilisé par l'écran Hygiène : cocher passe par le moteur (habitude + tâche du Hub), décocher annule les deux.
     func setHygiene(_ h: HygieneHabit, _ on: Bool) {
-        if on {
-            if !hygieneDone(h) { hygieneLog.append(HygieneLog(date: .now, habit: h.rawValue)) }
-        } else {
-            hygieneLog.removeAll { $0.habit == h.rawValue && Calendar.current.isDateInToday($0.date) }
-        }
+        if on { engine.apply(.hygiene(habits: [h])) } else { engine.unsetHygiene(h) }
     }
     var hygieneSummary: String {
-        let done = HygieneHabit.allCases.filter { hygieneDone($0) }.map(\.title)
+        let done = HygieneHabit.allCases.filter { hygieneDone($0) }.map(\.shortTitle)
         return done.isEmpty ? "rien de fait" : done.joined(separator: ", ")
     }
 
@@ -121,165 +171,49 @@ final class AppStore: ObservableObject {
                               sets: sets.filter { cal.isDate($0.date, inSameDayAs: d) }.count))
     }
 
+    /// Régénère la journée type (emploi du temps, contrôles, devoirs, profs, hygiène, muscu, repas).
     func resetToday() {
-        tasks = Self.defaultSchedule(date: .now, workoutIndex: workoutCursor, timetable: timetable, exams: exams)
+        tasks = Planner.generate(date: .now, profile: profileOrDefault, workoutIndex: workoutCursor, timetable: timetable,
+                                 exams: exams, homework: homework, tutors: tutors)
         tasksDate = .now
-        resolveOverlaps()
-    }
-
-    /// Modifie ici les horaires de ta journée type. Les cours viennent de ton emploi du temps (Plus → Emploi du temps).
-    static func defaultSchedule(date: Date, workoutIndex: Int, timetable: [TimetableEntry], exams: [ExamItem]) -> [TaskItem] {
-        let cal = Calendar.current
-        let wd = cal.component(.weekday, from: date)                // 1 = dimanche
-        let todays = timetable.filter { $0.weekday == wd }.sorted { $0.start < $1.start }
-        let isSchool = !todays.isEmpty || (timetable.isEmpty && (2...6).contains(wd))
-        let trains = ![1, 4].contains(wd)                           // repos : dimanche & mercredi
-        let hairDay = [2, 5, 1].contains(wd)                        // lundi, jeudi, dimanche
-        let day = Program.days[workoutIndex % Program.days.count]
-
-        let today0 = cal.startOfDay(for: date)
-        let soon = exams.filter {
-            let d = cal.dateComponents([.day], from: today0, to: cal.startOfDay(for: $0.date)).day ?? 99
-            return d >= 0 && d <= 3
-        }.sorted { $0.date < $1.date }.first
-        var revisionTitle = "Révisions / lecture"
-        if let e = soon {
-            let d = cal.dateComponents([.day], from: today0, to: cal.startOfDay(for: e.date)).day ?? 0
-            revisionTitle = "Réviser \(e.subject) – contrôle \(d == 0 ? "aujourd'hui" : d == 1 ? "demain" : "dans \(d) j")"
-        }
-
-        let gymStart = isSchool ? 18 * 60 + 30 : 16 * 60
-        let gym = trains
-            ? TaskItem(title: "Musculation – \(day.code) \(day.name)", icon: "dumbbell.fill", start: gymStart, duration: 75, kind: .workout)
-            : TaskItem(title: "Récupération active (marche + étirements)", icon: "figure.walk", start: gymStart, duration: 45, kind: .rest)
-        let shower = TaskItem(title: hairDay ? "Douche + shampoing & soin cheveux" : "Douche", icon: "shower.fill",
-                              start: gymStart + (trains ? 75 : 45), duration: 15, kind: .hygiene, habit: hairDay ? "shower,hair" : "shower")
-
-        if isSchool {
-            let lessons: [TaskItem] = todays.isEmpty
-                ? [TaskItem(title: "Cours – Collège pilote", icon: "graduationcap.fill", start: 8 * 60, duration: 480, kind: .school)]
-                : todays.map { TaskItem(title: "Cours : \($0.subject)", icon: "graduationcap.fill", start: $0.start, duration: max(15, $0.end - $0.start), kind: .school) }
-            return [
-                TaskItem(title: "Réveil & petit-déjeuner", icon: "sunrise.fill", start: 7 * 60, duration: 45, kind: .meal),
-                TaskItem(title: "Dents + visage (matin)", icon: "sparkles", start: 7 * 60 + 45, duration: 10, kind: .hygiene, habit: "teethAM,faceAM")
-            ] + lessons + [
-                TaskItem(title: "Repas protéiné", icon: "fork.knife", start: 16 * 60 + 15, duration: 30, kind: .meal),
-                TaskItem(title: "Photos des cours du jour 📸", icon: "camera.fill", start: 16 * 60 + 45, duration: 5, kind: .other),
-                TaskItem(title: "Devoirs", icon: "book.fill", start: 16 * 60 + 50, duration: 90, kind: .study),
-                gym,
-                shower,
-                TaskItem(title: "Dîner", icon: "fork.knife", start: 20 * 60, duration: 40, kind: .meal),
-                TaskItem(title: revisionTitle, icon: "text.book.closed.fill", start: 20 * 60 + 40, duration: 50, kind: .study),
-                TaskItem(title: "Dents + visage (soir)", icon: "sparkles", start: 21 * 60 + 30, duration: 15, kind: .hygiene, habit: "teethPM,facePM"),
-                TaskItem(title: "Préparer demain + bilan avec Nexus", icon: "checklist", start: 21 * 60 + 45, duration: 15, kind: .other),
-                TaskItem(title: "Sommeil (8-9 h)", icon: "moon.zzz.fill", start: 22 * 60, duration: 540, kind: .sleep)
-            ]
-        } else {
-            return [
-                TaskItem(title: "Réveil & petit-déjeuner", icon: "sunrise.fill", start: 8 * 60 + 30, duration: 45, kind: .meal),
-                TaskItem(title: "Dents + visage (matin)", icon: "sparkles", start: 9 * 60 + 15, duration: 10, kind: .hygiene, habit: "teethAM,faceAM"),
-                TaskItem(title: soon != nil ? revisionTitle : "Révisions longues", icon: "book.fill", start: 9 * 60 + 30, duration: 120, kind: .study),
-                TaskItem(title: "Déjeuner", icon: "fork.knife", start: 12 * 60 + 30, duration: 60, kind: .meal),
-                TaskItem(title: "Devoirs / avance sur la semaine", icon: "text.book.closed.fill", start: 14 * 60, duration: 90, kind: .study),
-                gym,
-                shower,
-                TaskItem(title: "Dîner", icon: "fork.knife", start: 19 * 60 + 30, duration: 45, kind: .meal),
-                TaskItem(title: "Préparer la semaine", icon: "checklist", start: 20 * 60 + 30, duration: 30, kind: .other),
-                TaskItem(title: "Dents + visage (soir)", icon: "sparkles", start: 21 * 60 + 30, duration: 15, kind: .hygiene, habit: "teethPM,facePM"),
-                TaskItem(title: "Sommeil (8-9 h)", icon: "moon.zzz.fill", start: 22 * 60, duration: 540, kind: .sleep)
-            ]
+        // Habitudes déjà faites aujourd'hui → tâches déjà cochées.
+        for i in tasks.indices where tasks[i].kind == .hygiene && !tasks[i].habits.isEmpty
+            && tasks[i].habits.allSatisfy({ hygieneDone($0) }) {
+            tasks[i].done = true
         }
     }
 
-    func complete(_ task: TaskItem) {
-        guard let i = tasks.firstIndex(where: { $0.id == task.id }) else { return }
-        tasks[i].done = true
-        if task.kind == .workout { workoutCursor = (workoutCursor + 1) % Program.days.count }
-        if let hs = task.habit {
-            for s in hs.split(separator: ",") { if let h = HygieneHabit(rawValue: String(s)) { setHygiene(h, true) } }
-        }
-    }
+    // Raccourcis conservés pour les écrans existants : ils passent tous par le moteur d'actions.
+    func complete(_ task: TaskItem) { engine.apply(.completeTask(ref: task.id.uuidString)) }
+    func startNow(_ task: TaskItem) { engine.apply(.startTask(ref: task.id.uuidString)) }
+    func switchActivity(title: String, minutes: Int) { engine.apply(.switchActivity(title: title, minutes: minutes)) }
 
-    /// Retrouve une tâche restante à partir de mots-clés (« devoirs », « muscu »…).
     func findPending(_ query: String) -> TaskItem? {
-        let words = query.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init).filter { $0.count > 2 }
-        guard !words.isEmpty else { return nil }
-        return pending.first { t in
-            let title = t.title.lowercased()
-            return words.contains { title.contains($0) }
-        }
-    }
-
-    /// « Commencer maintenant » : avance la tâche à l'heure actuelle ; les autres glissent si elles se chevauchent.
-    func startNow(_ task: TaskItem) {
-        guard let i = tasks.firstIndex(where: { $0.id == task.id }) else { return }
-        let now = minutesNow
-        if tasks[i].start > now { tasks[i].start = now }
-        resolveOverlaps()
-    }
-
-    /// Applique un nouveau planning proposé par Nexus (titre = mot-clé d'une tâche existante).
-    func applyPlan(_ items: [(title: String, start: Int, duration: Int?)]) {
-        for it in items {
-            guard let t = findPending(it.title), let i = tasks.firstIndex(where: { $0.id == t.id }) else { continue }
-            tasks[i].start = max(0, min(it.start, 23 * 60))
-            if let d = it.duration, d >= 5 { tasks[i].duration = d }
-        }
-        resolveOverlaps()
-    }
-
-    /// Décale vers l'avant les tâches restantes qui se chevauchent (le sommeil et les cours ne bougent pas).
-    func resolveOverlaps() {
-        var cursor = 0
-        var res: [TaskItem] = []
-        for var t in pending {
-            let fixed = t.kind == .sleep || t.kind == .school
-            if !fixed && t.start < cursor { t.start = cursor }
-            cursor = max(cursor, t.end)
-            if !fixed && t.start >= 23 * 60 + 30 { continue }
-            res.append(t)
-        }
-        let others = tasks.filter { t in !res.contains(where: { $0.id == t.id }) && (t.done || (t.kind == .school && t.end <= minutesNow)) }
-        tasks = (others + res).sorted { $0.start < $1.start }
-    }
-
-    /// « Je fais autre chose » : enregistre l'activité et décale le reste de la journée.
-    func switchActivity(title: String, minutes: Int) {
-        let now = minutesNow
-        tasks.append(TaskItem(title: title, icon: "bolt.fill", start: now, duration: minutes, kind: .other, done: true))
-        var cursor = now + minutes
-        var rescheduled: [TaskItem] = []
-        for var t in pending {
-            if t.kind == .sleep || t.kind == .school { rescheduled.append(t); continue }
-            if t.start < cursor { t.start = cursor }
-            cursor = t.end
-            if t.start >= 23 * 60 + 30 { continue }
-            rescheduled.append(t)
-        }
-        let done = tasks.filter { $0.done }
-        tasks = (done + rescheduled).sorted { $0.start < $1.start }
+        Planner.match(query, in: pending, now: minutesNow, includeDone: false).map { pending[$0] }
     }
 
     // MARK: Nutrition
     func addFood(_ card: FoodCard, grams: Double) {
-        foods.append(FoodEntry(date: .now, name: card.name, grams: grams,
-                               kcal: card.kcal100 * grams / 100, protein: card.protein100 * grams / 100))
+        engine.apply(.meal(items: [MealLine(name: card.name, grams: grams,
+                                            kcal: card.kcal100 * grams / 100, protein: card.protein100 * grams / 100)]))
     }
     func removeFood(_ f: FoodEntry) { foods.removeAll { $0.id == f.id } }
 
-    /// Crée automatiquement une carte pour chaque nouvel ingrédient.
-    func ensureCard(name: String, grams: Double, kcal: Double, protein: Double) {
+    /// Crée automatiquement une carte pour chaque nouvel ingrédient. Renvoie l'id de la carte créée.
+    @discardableResult
+    func ensureCard(name: String, grams: Double, kcal: Double, protein: Double) -> String? {
         let lower = name.lowercased()
         guard grams > 0,
               !FoodCard.all.contains(where: { $0.name.lowercased() == lower }),
-              !customFoods.contains(where: { $0.name.lowercased() == lower }) else { return }
-        customFoods.append(FoodCard(id: "custom-\(lower)", name: name, emoji: "🍽️",
-                                    kcal100: kcal / grams * 100, protein100: protein / grams * 100,
-                                    portion: max(10, (grams / 10).rounded() * 10)))
+              !customFoods.contains(where: { $0.name.lowercased() == lower }) else { return nil }
+        let card = FoodCard(id: "custom-\(lower)", name: name, emoji: "🍽️",
+                            kcal100: kcal / grams * 100, protein100: protein / grams * 100,
+                            portion: max(10, (grams / 10).rounded() * 10))
+        customFoods.append(card)
+        return card.id
     }
     func addCustomFood(name: String, grams: Double, kcal100: Double, protein100: Double) {
-        foods.append(FoodEntry(date: .now, name: name, grams: grams, kcal: kcal100 * grams / 100, protein: protein100 * grams / 100))
-        ensureCard(name: name, grams: grams, kcal: kcal100 * grams / 100, protein: protein100 * grams / 100)
+        engine.apply(.meal(items: [MealLine(name: name, grams: grams, kcal: kcal100 * grams / 100, protein: protein100 * grams / 100)]))
     }
 
     // MARK: Musculation
@@ -295,13 +229,32 @@ final class AppStore: ObservableObject {
         }
         let day = past.filter { cal.startOfDay(for: $0.date) == lastDay }
         guard let top = day.max(by: { ($0.weight, $0.reps) < ($1.weight, $1.reps) }) else { return (0, "") }
-        if top.reps >= ex.repMax {
+        if top.reps >= ex.repMax && (top.effort ?? 2) < 3 {
             return (top.weight + 2.5, "Dernière : \(fmtKg(top.weight)) kg × \(top.reps) → monte à \(fmtKg(top.weight + 2.5)) kg")
         }
         return (top.weight, "Dernière : \(fmtKg(top.weight)) kg × \(top.reps) → vise \(ex.repMax) reps")
     }
 
-    // MARK: Persistance
+    // MARK: Journal Nexus
+    var lastNexusEntry: JournalEntry? { journal.last { $0.source == .nexus } }
+
+    func recordNexusError(userText: String, message: String) {
+        journal.append(JournalEntry(source: .nexus, userText: String(userText.prefix(160)), aiText: "⚠️ \(message)", items: []))
+        trimJournal()
+    }
+    func trimJournal() {
+        if journal.count > 300 { journal.removeFirst(journal.count - 300) }
+    }
+
+    // MARK: Persistance (fichier protégé, migration automatique depuis la v2)
+    private static var fileURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("selfbuild-store.json")
+    }
+
+    func saveNow() { save() }
+
     private func save() {
         let s = Snapshot(tasks: tasks, tasksDate: tasksDate, sets: sets, foods: foods, homework: homework, txns: txns,
                          notes: notes, workoutCursor: workoutCursor, calorieGoal: calorieGoal, proteinGoal: proteinGoal,
@@ -310,13 +263,19 @@ final class AppStore: ObservableObject {
                          kitchenStock: kitchenStock, runs: runs, projects: projects, challenges: challenges,
                          capsules: capsules, dayLogs: dayLogs, healthLog: healthLog, reviews: reviews, hygieneLog: hygieneLog,
                          tutors: tutors, tutorSessions: tutorSessions, exams: exams, timetable: timetable,
-                         reminders: reminders, lessons: lessons)
-        if let data = try? JSONEncoder().encode(s) { UserDefaults.standard.set(data, forKey: key) }
+                         reminders: reminders, lessons: lessons, profile: profile, journal: journal)
+        guard let data = try? JSONEncoder().encode(s) else { return }
+        try? data.write(to: Self.fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let s = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
+        let decoder = JSONDecoder()
+        var snapshot: Snapshot?
+        if let data = try? Data(contentsOf: Self.fileURL) { snapshot = try? decoder.decode(Snapshot.self, from: data) }
+        if snapshot == nil, let legacy = UserDefaults.standard.data(forKey: Self.legacyKey) {
+            snapshot = try? decoder.decode(Snapshot.self, from: legacy)    // données v2 conservées telles quelles
+        }
+        guard let s = snapshot else { return }
         tasks = s.tasks; tasksDate = s.tasksDate; sets = s.sets; foods = s.foods; homework = s.homework
         txns = s.txns; notes = s.notes; workoutCursor = s.workoutCursor; calorieGoal = s.calorieGoal
         proteinGoal = s.proteinGoal; lockdownActive = s.lockdownActive; lockdownEnd = s.lockdownEnd
@@ -326,5 +285,6 @@ final class AppStore: ObservableObject {
         dayLogs = s.dayLogs ?? []; healthLog = s.healthLog ?? []; reviews = s.reviews ?? []; hygieneLog = s.hygieneLog ?? []
         tutors = s.tutors ?? []; tutorSessions = s.tutorSessions ?? []; exams = s.exams ?? []
         timetable = s.timetable ?? []; reminders = s.reminders ?? []; lessons = s.lessons ?? []
+        profile = s.profile; journal = s.journal ?? []
     }
 }

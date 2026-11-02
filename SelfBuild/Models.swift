@@ -1,7 +1,10 @@
 import Foundation
 import UIKit
 
-enum TaskKind: String, Codable { case school, study, workout, meal, sleep, rest, hygiene, other }
+// ⚠️ Règle de migration : tout champ ajouté à un modèle déjà sauvegardé est OPTIONNEL
+// (le décodage synthétisé de Swift exige les champs non optionnels, même avec une valeur par défaut).
+
+enum TaskKind: String, Codable { case school, study, workout, meal, sleep, rest, hygiene, other, tutor }
 
 struct TaskItem: Identifiable, Codable, Hashable {
     var id = UUID()
@@ -11,8 +14,24 @@ struct TaskItem: Identifiable, Codable, Hashable {
     var duration: Int
     var kind: TaskKind
     var done = false
-    var habit: String? = nil   // ex : "teethAM,faceAM" (habitudes d'hygiène validées avec la tâche)
+    var habit: String? = nil       // habitude d'hygiène validée avec la tâche (ex : "teethPM")
+    // v3
+    var linkID: UUID? = nil        // prof particulier, contrôle…
+    var startedAt: Int? = nil      // minute réelle de démarrage
+    var doneAt: Int? = nil         // minute réelle de fin
+
     var end: Int { start + duration }
+    /// Cours, cours particulier et sommeil ne bougent jamais quand le planning se réorganise.
+    var isFixed: Bool { kind == .school || kind == .sleep || kind == .tutor }
+    var habits: [HygieneHabit] {
+        (habit ?? "").split(separator: ",").compactMap { HygieneHabit(rawValue: String($0)) }
+    }
+    var shortID: String { String(id.uuidString.prefix(4)) }
+}
+
+/// Horaires d'une tâche (pour annuler une réorganisation sans toucher au reste).
+struct TaskTiming: Codable, Hashable {
+    var id: UUID; var start: Int; var duration: Int; var startedAt: Int?
 }
 
 struct SetRecord: Identifiable, Codable, Hashable {
@@ -36,9 +55,21 @@ struct ChatMessage: Identifiable, Hashable {
     let isUser: Bool
     var text: String
     var image: UIImage? = nil
+    /// Entrée du Journal Nexus créée par ce tour (actions exécutées / proposées).
+    var journalID: UUID? = nil
+    var isError = false
 }
 
-// MARK: - Nouveaux modèles
+/// Un aliment d'un repas (saisi par l'IA ou par l'UI).
+struct MealLine: Codable, Hashable {
+    var name: String; var grams: Double; var kcal: Double; var protein: Double
+}
+
+/// Créneau proposé par Nexus pour réorganiser la journée.
+struct PlanSlot: Codable, Hashable {
+    var ref: String; var start: Int; var duration: Int?
+}
+
 struct ClothingItem: Identifiable, Codable, Hashable {
     var id = UUID(); var name: String; var category: String; var clean = true
 }
@@ -79,7 +110,7 @@ struct SafeEntry: Identifiable, Codable, Hashable {
 
 struct Tutor: Identifiable, Codable, Hashable {
     var id = UUID(); var name: String; var subject: String
-    var price: Double            // TND par séance
+    var price: Double            // par séance
     var weekday: Int             // 1 = dimanche … 7 = samedi
     var hour: Int; var minute: Int
     var sessionsPerMonth = 4
@@ -102,7 +133,73 @@ struct LessonPhoto: Identifiable, Codable, Hashable {
     var id = UUID(); var date: Date; var subject: String; var file: String; var summary: String?
 }
 
-enum HygieneHabit: String, CaseIterable, Identifiable {
+// MARK: - Profil (premier lancement)
+struct UserProfile: Codable, Hashable {
+    var firstName = ""
+    var age = 15
+    var heightCm = 175.0
+    var weightKg = 65.0
+    var sex = "M"                  // M | F (pour le calcul des besoins)
+    var city = "Le Kef"
+    var cityLabel = "Le Kef, Tunisie"
+    var latitude = 36.17
+    var longitude = 8.70
+    var currency = "TND"
+    var isStudent = true
+    var level = ""
+    var school = ""
+    var subjects: [String] = []
+    var goals: [String] = []
+    var goalsNote = ""
+    var wakeMinute = 7 * 60
+    var bedMinute = 22 * 60
+    var trainingDays: [Int] = [2, 3, 5, 6, 7]   // repos dimanche et mercredi
+
+    init() {}
+
+    /// Décodage tolérant : un champ absent (ancienne version) prend sa valeur par défaut.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = UserProfile()
+        firstName = try c.decodeIfPresent(String.self, forKey: .firstName) ?? d.firstName
+        age = try c.decodeIfPresent(Int.self, forKey: .age) ?? d.age
+        heightCm = try c.decodeIfPresent(Double.self, forKey: .heightCm) ?? d.heightCm
+        weightKg = try c.decodeIfPresent(Double.self, forKey: .weightKg) ?? d.weightKg
+        sex = try c.decodeIfPresent(String.self, forKey: .sex) ?? d.sex
+        city = try c.decodeIfPresent(String.self, forKey: .city) ?? d.city
+        cityLabel = try c.decodeIfPresent(String.self, forKey: .cityLabel) ?? d.cityLabel
+        latitude = try c.decodeIfPresent(Double.self, forKey: .latitude) ?? d.latitude
+        longitude = try c.decodeIfPresent(Double.self, forKey: .longitude) ?? d.longitude
+        currency = try c.decodeIfPresent(String.self, forKey: .currency) ?? d.currency
+        isStudent = try c.decodeIfPresent(Bool.self, forKey: .isStudent) ?? d.isStudent
+        level = try c.decodeIfPresent(String.self, forKey: .level) ?? d.level
+        school = try c.decodeIfPresent(String.self, forKey: .school) ?? d.school
+        subjects = try c.decodeIfPresent([String].self, forKey: .subjects) ?? d.subjects
+        goals = try c.decodeIfPresent([String].self, forKey: .goals) ?? d.goals
+        goalsNote = try c.decodeIfPresent(String.self, forKey: .goalsNote) ?? d.goalsNote
+        wakeMinute = try c.decodeIfPresent(Int.self, forKey: .wakeMinute) ?? d.wakeMinute
+        bedMinute = try c.decodeIfPresent(Int.self, forKey: .bedMinute) ?? d.bedMinute
+        trainingDays = try c.decodeIfPresent([Int].self, forKey: .trainingDays) ?? d.trainingDays
+    }
+
+    static let goalChoices = ["Prendre du muscle", "Discipline aux études", "Mieux manger", "Gérer mon argent",
+                              "Hygiène & peau", "Courir / cardio", "Mieux dormir", "Perdre du gras", "Autonomie"]
+
+    /// Besoins estimés (Mifflin-St Jeor × activité). Pour un mineur : jamais de déficit agressif.
+    var suggestedCalories: Double {
+        let bmr = 10 * weightKg + 6.25 * heightCm - 5 * Double(age) + (sex == "F" ? -161 : 5)
+        var kcal = bmr * 1.6
+        if goals.contains("Prendre du muscle") { kcal += 250 }
+        if goals.contains("Perdre du gras") { kcal -= age < 18 ? 200 : 350 }
+        return max(1600, (kcal / 50).rounded() * 50)
+    }
+    var suggestedProtein: Double {
+        let perKg = goals.contains("Prendre du muscle") ? 1.8 : 1.4
+        return (weightKg * perKg / 5).rounded() * 5
+    }
+}
+
+enum HygieneHabit: String, CaseIterable, Identifiable, Codable {
     case teethAM, faceAM, teethPM, facePM, shower, hair
     var id: String { rawValue }
     var title: String {
@@ -113,6 +210,16 @@ enum HygieneHabit: String, CaseIterable, Identifiable {
         case .facePM: return "Soin du visage – soir"
         case .shower: return "Douche"
         case .hair: return "Soin des cheveux"
+        }
+    }
+    var shortTitle: String {
+        switch self {
+        case .teethAM: return "Dents (matin)"
+        case .faceAM: return "Visage (matin)"
+        case .teethPM: return "Dents (soir)"
+        case .facePM: return "Visage (soir)"
+        case .shower: return "Douche"
+        case .hair: return "Cheveux"
         }
     }
     var icon: String {
@@ -134,10 +241,11 @@ enum HygieneHabit: String, CaseIterable, Identifiable {
 }
 
 // MARK: - Navigation
-enum AppDestination: String, Identifiable, CaseIterable {
+enum AppDestination: String, Identifiable, CaseIterable, Codable {
     case hub, nexus, muscu, nutrition, plus
     case study, finance, notes, hygiene, wardrobe, kitchen, music, running, projects, challenges, capsule, reports, health, safe, settings
     case tutors, reminders, lessons, school
+    case journal
     var id: String { rawValue }
     var tabIndex: Int? {
         switch self {
@@ -175,6 +283,7 @@ enum AppDestination: String, Identifiable, CaseIterable {
         case .reminders: return "Rappels"
         case .lessons: return "Mes cours (photos)"
         case .school: return "Emploi du temps & contrôles"
+        case .journal: return "Journal Nexus"
         }
     }
     var icon: String {
@@ -203,6 +312,7 @@ enum AppDestination: String, Identifiable, CaseIterable {
         case .reminders: return "bell.badge.fill"
         case .lessons: return "photo.stack.fill"
         case .school: return "calendar"
+        case .journal: return "list.bullet.rectangle.portrait.fill"
         }
     }
 }
@@ -236,6 +346,11 @@ enum Program {
             ex("Squat", 3, 8, 12), ex("Développé couché", 3, 8, 12), ex("Rowing barre", 3, 8, 12),
             ex("Développé militaire", 3, 10, 12), ex("Curl barre", 2, 10, 12), ex("Extension triceps poulie", 2, 10, 15)])
     ]
+    static var allExerciseNames: [String] {
+        var seen: [String] = []
+        for d in days { for e in d.exercises where !seen.contains(e.name) { seen.append(e.name) } }
+        return seen
+    }
 }
 
 // MARK: - Cartes nutrition (valeurs moyennes pour 100 g d'aliment cuit)
@@ -259,6 +374,7 @@ enum Finance {
         ("Snacks", "takeoutbag.and.cup.and.straw.fill"), ("Nutrition", "fork.knife"), ("Transport", "bus.fill"),
         ("École", "backpack.fill"), ("Études", "graduationcap.fill"), ("Sport", "figure.run"), ("Loisirs", "gamecontroller.fill"), ("Autre", "ellipsis.circle.fill")
     ]
+    static var categoryNames: [String] { categories.map(\.name) }
     static let amounts: [Double] = [0.5, 1, 2, 5, 10, 20]
 }
 

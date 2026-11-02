@@ -4,10 +4,46 @@ struct RootView: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var gemini: GeminiClient
     @EnvironmentObject var router: Router
-    @EnvironmentObject var rest: RestTimer
+    @EnvironmentObject var nexus: NexusSession
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
+        Group {
+            if store.needsOnboarding {
+                OnboardingView()
+            } else {
+                main
+            }
+        }
+        .task {
+            await NotificationManager.shared.requestAuthorization()
+            store.rolloverIfNeeded()
+            if !store.needsOnboarding { await NotificationManager.shared.refreshProactive(store: store, gemini: gemini) }
+        }
+        .onChange(of: store.needsOnboarding) { _, needs in
+            if !needs {
+                nexus.reset()
+                Task { await NotificationManager.shared.refreshProactive(store: store, gemini: gemini) }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background:
+                store.saveNow()
+                if store.lockdownActive {
+                    NotificationManager.shared.schedule(id: "lockdown", title: "🔒 Lockdown actif",
+                                                        body: "Reviens sur SELF BUILD, tes devoirs t'attendent.", in: 15)
+                }
+            case .active:
+                NotificationManager.shared.cancel(id: "lockdown")
+                store.rolloverIfNeeded()
+            default:
+                break
+            }
+        }
+    }
+
+    private var main: some View {
         ZStack {
             AppBackground()
             VStack(spacing: 0) {
@@ -32,24 +68,18 @@ struct RootView: View {
         .fullScreenCover(isPresented: Binding(get: { store.lockdownActive }, set: { _ in })) {
             LockdownView().hideKeyboardOnTap()
         }
-        .task {
-            await NotificationManager.shared.requestAuthorization()
-            store.rolloverIfNeeded()
-            await NotificationManager.shared.refreshProactive(store: store, gemini: gemini)
-        }
-        .onChange(of: scenePhase) { _, phase in
-            switch phase {
-            case .background:
-                if store.lockdownActive {
-                    NotificationManager.shared.schedule(id: "lockdown", title: "🔒 Lockdown actif",
-                                                        body: "Reviens sur SELF BUILD, tes devoirs t'attendent.", in: 15)
-                }
-            case .active:
-                NotificationManager.shared.cancel(id: "lockdown")
-                store.rolloverIfNeeded()
-            default: break
-            }
-        }
+        // « Demander à Nexus » depuis n'importe quel écran : envoyé par la session partagée,
+        // que l'onglet Nexus ait déjà été affiché ou non (déclenchement fiable).
+        .onChange(of: router.pendingPrompt) { _, prompt in consume(prompt) }
+        .onAppear { consume(router.pendingPrompt) }
+    }
+
+    private func consume(_ prompt: String?) {
+        guard let p = prompt else { return }
+        router.pendingPrompt = nil
+        router.sheet = nil
+        router.selectedTab = 1
+        nexus.send(p)
     }
 }
 
@@ -57,10 +87,9 @@ final class Router: ObservableObject {
     @Published var selectedTab = 0
     @Published var pendingPrompt: String?
     @Published var sheet: AppDestination?
+    /// Écran recommandé par Nexus (navigate_to), affiché dans la barre « prochaine action ».
     @Published var aiTarget: AppDestination?
     @Published var wrapUp: WrapUpRequest?
-    /// Dernière modification faite par Nexus (affichée dans le Hub).
-    @Published var lastAction: String?
 
     func go(_ d: AppDestination) {
         if let t = d.tabIndex { sheet = nil; selectedTab = t } else { sheet = d }

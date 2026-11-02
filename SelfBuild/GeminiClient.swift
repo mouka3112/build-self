@@ -6,6 +6,13 @@ struct HomeworkCheck: Decodable { let valid: Bool; let validatedIndices: [Int]; 
 struct ReceiptResult: Decodable { let amount: Double; let category: String; let note: String }
 struct Reminder: Decodable { let minute: Int; let title: String; let body: String }
 
+/// Résultat d'un tour de chat : le texte (déjà affiché mot par mot) + les appels de fonctions typés.
+struct ChatTurn {
+    var text: String
+    var calls: [ToolCall]
+    var model: String
+}
+
 @MainActor
 final class GeminiClient: ObservableObject {
     @Published var isThinking = false
@@ -22,7 +29,7 @@ final class GeminiClient: ObservableObject {
     }()
 
     static let defaultModel = "gemini-3.8-flash"
-    /// Modifiable dans Plus → Réglages si Google renomme le modèle.
+    /// Modifiable dans Réglages si Google renomme le modèle.
     var modelName: String {
         let m = (UserDefaults.standard.string(forKey: "geminiModel") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return m.isEmpty ? Self.defaultModel : m
@@ -39,7 +46,27 @@ final class GeminiClient: ObservableObject {
         }
     }
 
-    // MARK: Modèles de secours (si Google renvoie 503 « forte demande » / 429 / 404)
+    // MARK: Test de la clé (premier lancement)
+    func testKey(_ key: String) async -> (ok: Bool, message: String) {
+        let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty else { return (false, "Colle d'abord ta clé.") }
+        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=\(k)") else {
+            return (false, "Clé illisible (caractères invalides).")
+        }
+        do {
+            let (data, resp) = try await session.data(from: url)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 200 {
+                let n = (try? JSONDecoder().decode(ModelList.self, from: data))?.models.count ?? 0
+                return (true, "✅ Clé valide — \(n) modèles disponibles.")
+            }
+            return (false, Self.readable(code: code, body: String(data: data, encoding: .utf8) ?? ""))
+        } catch {
+            return (false, "Pas de connexion : \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: Modèles de secours (503 « forte demande » / 429 / 404…)
     private struct ModelList: Decodable {
         struct M: Decodable { let name: String; let supportedGenerationMethods: [String]? }
         let models: [M]
@@ -47,9 +74,10 @@ final class GeminiClient: ObservableObject {
     private var cachedModels: [String] = []
     private var cachedFor = ""
     private var ttsModel: String?
+    @Published private(set) var availableModels: [String] = []
 
     private func candidates() async -> [String] {
-        if cachedFor == modelName, !cachedModels.isEmpty { return cachedModels }
+        if cachedFor == modelName + apiKey.suffix(4), !cachedModels.isEmpty { return cachedModels }
         var list = [modelName]
         if let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=\(apiKey)"),
            let (data, _) = try? await session.data(from: url),
@@ -59,16 +87,32 @@ final class GeminiClient: ObservableObject {
             ttsModel = names.first { $0.contains("tts") && $0.contains("flash") } ?? names.first { $0.contains("tts") }
             let bad = ["image", "tts", "audio", "live", "embedding", "robotics", "computer", "vision", "imagen", "veo", "learnlm", "gemma", "aqa", "native"]
             let flash = names.filter { n in n.contains("flash") && !bad.contains { n.contains($0) } }
+            availableModels = flash.sorted(by: >)
             let lite = flash.filter { $0.contains("lite") }.sorted(by: >)
             let rest = flash.filter { !$0.contains("lite") }.sorted(by: >)
-            for m in lite + rest where !list.contains(m) { list.append(m) }
+            for m in rest.prefix(2) + lite.prefix(2) where !list.contains(m) { list.append(m) }
         }
         for alias in ["gemini-flash-latest", "gemini-flash-lite-latest"] where !list.contains(alias) { list.append(alias) }
-        cachedModels = Array(list.prefix(5)); cachedFor = modelName
+        cachedModels = Array(list.prefix(6)); cachedFor = modelName + apiKey.suffix(4)
         return cachedModels
     }
 
-    // MARK: API publique
+    // MARK: Messages lisibles
+    static func readable(code: Int, body: String) -> String {
+        let b = body.lowercased()
+        switch code {
+        case 400 where b.contains("api key") || b.contains("api_key"): return "Clé API invalide : vérifie-la dans Réglages."
+        case 400: return "Requête refusée par Gemini (400)."
+        case 401, 403: return "Clé refusée par Google (403) : API Gemini non activée pour cette clé ?"
+        case 404: return "Modèle introuvable (404)."
+        case 429: return "Quota Gemini atteint (429) : attends une minute."
+        case 500, 502, 504: return "Erreur serveur Google (\(code))."
+        case 503: return "Gemini est surchargé (503 : forte demande)."
+        default: return "Erreur Gemini \(code)."
+        }
+    }
+
+    // MARK: Historique court (10 messages, 1500 caractères, une seule image récente)
     private func chatContents(_ history: [ChatMessage]) -> [[String: Any]] {
         let msgs = Array(history.drop(while: { !$0.isUser }).suffix(10))
         let withImages = Set(msgs.filter { $0.image != nil }.suffix(1).map(\.id))
@@ -82,36 +126,33 @@ final class GeminiClient: ObservableObject {
         }
     }
 
-    func chat(history: [ChatMessage], store: AppStore) async throws -> String {
-        try await generate(system: systemPrompt(store), contents: chatContents(history))
-    }
-
+    // MARK: API publique (modules)
     /// Texte libre (avec photo optionnelle).
     func text(_ prompt: String, image: UIImage? = nil, store: AppStore? = nil) async throws -> String {
         var parts: [[String: Any]] = [["text": prompt]]
         if let b64 = image?.jpegBase64() { parts.append(["inline_data": ["mime_type": "image/jpeg", "data": b64]]) }
-        return try await generate(system: store.map { systemPrompt($0) }, contents: [["role": "user", "parts": parts]])
+        return try await generate(system: store.map { AIContext.systemPrompt($0, tools: false) }, contents: [["role": "user", "parts": parts]])
     }
 
     /// Texte avec plusieurs photos (cours).
     func text(_ prompt: String, images: [UIImage], store: AppStore? = nil) async throws -> String {
         var parts: [[String: Any]] = [["text": prompt]]
         for img in images.prefix(4) { if let b64 = img.jpegBase64() { parts.append(["inline_data": ["mime_type": "image/jpeg", "data": b64]]) } }
-        return try await generate(system: store.map { systemPrompt($0) }, contents: [["role": "user", "parts": parts]])
+        return try await generate(system: store.map { AIContext.systemPrompt($0, tools: false) }, contents: [["role": "user", "parts": parts]])
     }
 
-    /// Réponse JSON décodée dans le type voulu.
+    /// Réponse JSON (non streaming) décodée dans le type voulu.
     func json<T: Decodable>(_ type: T.Type, _ prompt: String, image: UIImage? = nil, store: AppStore? = nil) async throws -> T {
         var parts: [[String: Any]] = [["text": prompt]]
         if let b64 = image?.jpegBase64() { parts.append(["inline_data": ["mime_type": "image/jpeg", "data": b64]]) }
-        let t = try await generate(system: store.map { systemPrompt($0) }, contents: [["role": "user", "parts": parts]], json: true)
+        let t = try await generate(system: store.map { AIContext.systemPrompt($0, tools: false) }, contents: [["role": "user", "parts": parts]], json: true)
         return try decodeJSON(type, t)
     }
 
-    func validateHomework(image: UIImage, pending: [Homework]) async throws -> HomeworkCheck {
+    func validateHomework(image: UIImage, pending: [Homework], name: String = "l'élève") async throws -> HomeworkCheck {
         let list = pending.enumerated().map { "\($0.offset + 1). \($0.element.subject) – \($0.element.title)" }.joined(separator: "\n")
         let prompt = """
-        Voici une photo envoyée par Melik, élève de 9ème année, pour prouver que ses devoirs sont faits.
+        Voici une photo envoyée par \(name) pour prouver que ses devoirs sont faits.
         Devoirs à valider :
         \(list)
         Regarde la photo (cahier, feuille, exercices écrits). Réponds UNIQUEMENT en JSON :
@@ -122,70 +163,23 @@ final class GeminiClient: ObservableObject {
     }
 
     func scanReceipt(image: UIImage) async throws -> ReceiptResult {
-        let cats = Finance.categories.map(\.name).joined(separator: ", ")
+        let cats = Finance.categoryNames.joined(separator: ", ")
         let prompt = """
-        Analyse ce ticket de caisse (Tunisie, montants en dinars tunisiens DT, souvent 3 décimales). Réponds UNIQUEMENT en JSON :
+        Analyse ce ticket de caisse (Tunisie, montants souvent à 3 décimales). Réponds UNIQUEMENT en JSON :
         {"amount": total TTC en nombre, "category": une valeur parmi [\(cats)], "note": "nom du magasin ou résumé court"}
         """
         var r = try await json(ReceiptResult.self, prompt, image: image)
-        if !Finance.categories.map(\.name).contains(r.category) { r = ReceiptResult(amount: r.amount, category: "Autre", note: r.note) }
+        if !Finance.categoryNames.contains(r.category) { r = ReceiptResult(amount: r.amount, category: "Autre", note: r.note) }
         return r
     }
 
     func proactiveReminders(store: AppStore) async throws -> [Reminder] {
         let prompt = """
-        Génère 3 à 5 rappels de notification pour le reste de la journée de Melik (discipline, devoirs, nutrition, sommeil), tous APRÈS \(timeString(store.minutesNow + 5)).
+        Génère 3 à 5 rappels de notification pour le reste de la journée de \(store.displayName) (discipline, devoirs, nutrition, sommeil), tous APRÈS \(timeString(store.minutesNow + 5)).
         Inclus au moins un rappel d'hygiène (dents, visage, cheveux ou douche) si ce n'est pas déjà fait.
-        Réponds UNIQUEMENT en JSON : [{"minute": minutes depuis minuit (entier), "title": "max 5 mots", "body": "max 15 mots, direct, motivant"}]
+        Réponds UNIQUEMENT en JSON : [{"minute": minutes depuis minuit (entier), "title": "max 5 mots avec un emoji", "body": "max 15 mots, direct, motivant"}]
         """
         return try await json([Reminder].self, prompt, store: store)
-    }
-
-    // MARK: Contexte donné à Nexus
-    private func systemPrompt(_ s: AppStore) -> String {
-        let df = DateFormatter(); df.locale = Locale(identifier: "fr_FR"); df.dateFormat = "EEEE d MMMM yyyy, HH:mm"
-        let iso = DateFormatter(); iso.locale = Locale(identifier: "en_US_POSIX"); iso.dateFormat = "yyyy-MM-dd HH:mm"
-        return """
-        Tu es Nexus, le coach de vie intégré à SELF BUILD, l'app de Melik (15 ans, 1m83, 9ème année au collège pilote du Kef, Tunisie).
-        Objectifs de Melik : discipline de fer (études + musculation), nutrition optimisée, gestion de l'argent de poche, autonomie.
-        Style : français, tutoiement, direct, motivant, concis (max ~120 mots sauf si on te demande plus). Conseils adaptés à un adolescent :
-        pas de régime extrême, pas de produits dopants, sommeil 8-9 h, technique avant charges.
-        Maintenant : \(df.string(from: .now)) (format machine : \(iso.string(from: .now))).
-
-        TOUTES LES DONNÉES DE MELIK DANS L'APP (tu y as accès, appuie-toi dessus et ne dis jamais que tu n'y as pas accès) :
-        \(s.nexusContext())
-        (Son journal Safe Space et ses photos de progression ne te sont volontairement jamais transmis.)
-
-        ACTIONS : tout ce que Melik dit avoir FAIT, ou te demande d'enregistrer, doit être inscrit dans l'app en ajoutant à la FIN de ta réponse un tag par action, au format exact [[ACT:{json}]] (JSON valide sur UNE ligne). Sans tag, RIEN n'est enregistré. Types :
-        {"type":"expense","amount":3,"category":"Snacks|Nutrition|Transport|École|Études|Sport|Loisirs|Autre","note":"..."}
-        {"type":"income","amount":10,"note":"..."}
-        {"type":"meal","items":[{"name":"...","grams":150,"kcal":250,"protein":30}]}   (estime les TOTAUX de ce qu'il a mangé)
-        {"type":"water","ml":500}
-        {"type":"hygiene","habit":"teethAM|faceAM|teethPM|facePM|shower|hair"}
-        {"type":"task_done","title":"mot-clé de la tâche du planning"}
-        {"type":"start_task","title":"mot-clé"}   (il la commence maintenant)
-        {"type":"add_task","title":"...","start":"HH:mm","duration":30,"kind":"study|workout|meal|hygiene|rest|other"}   (ajoute une tâche au Hub)
-        {"type":"remove_task","title":"mot-clé"}
-        {"type":"switch","title":"activité","minutes":30}
-        {"type":"replan","tasks":[{"title":"mot-clé d'une tâche restante","start":"HH:mm","duration":45}]}   (réorganise les tâches restantes à partir de maintenant, sans chevauchement, sans toucher aux cours ni au sommeil)
-        {"type":"workout_set","exercise":"Squat","weight":60,"reps":8}
-        {"type":"health","kind":"Sommeil|Symptôme|Médicament|Énergie|Autre","text":"..."}
-        {"type":"note","text":"..."}
-        {"type":"reminder","title":"...","date":"yyyy-MM-dd HH:mm","repeat":"none|daily|weekly|monthly"}   (calcule la date à partir de maintenant)
-        {"type":"exam","subject":"Maths","date":"yyyy-MM-dd","topic":"..."}
-        {"type":"homework","subject":"Maths","topic":"exercices p.45","date":"yyyy-MM-dd"}
-        {"type":"tutor_session","title":"nom du prof ou matière"}   (séance de cours particulier faite)
-        {"type":"challenge_done","title":"mot-clé du défi"}
-        {"type":"undo","what":"expense|meal"}   (annule la dernière saisie si Melik s'est trompé)
-        Exemples :
-        « j'ai dépensé 3 dinars en snack » → « Noté, 3 TND de snacks. [[ACT:{"type":"expense","amount":3,"category":"Snacks","note":"snack"}]] »
-        « je viens de manger du riz et 150 g de poulet » → « Super apport en protéines ! [[ACT:{"type":"meal","items":[{"name":"Riz blanc","grams":200,"kcal":260,"protein":5},{"name":"Escalope de poulet","grams":150,"kcal":248,"protein":46}]}]] »
-        « j'ai fini mes devoirs » → « Bien joué ! [[ACT:{"type":"task_done","title":"devoirs"}]] »
-        « je me suis brossé les dents et lavé le visage ce soir » → [[ACT:{"type":"hygiene","habit":"teethPM"}]] [[ACT:{"type":"hygiene","habit":"facePM"}]]
-        « j'ai fait 8 reps à 60 kg au squat » → [[ACT:{"type":"workout_set","exercise":"Squat","weight":60,"reps":8}]]
-        N'enregistre que ce qu'il affirme avoir fait ou demande explicitement (jamais une intention vague ni une question). Confirme en une phrase.
-        Si utile, termine aussi par UN tag [[GOTO:x]] (x parmi : muscu, nutrition, study, hygiene, wardrobe, kitchen, music, running, projects, challenges, capsule, reports, health, safe, finance, notes, reminders, lessons, school, tutors) pour ouvrir le bon module.
-        """
     }
 
     private func decodeJSON<T: Decodable>(_ type: T.Type, _ text: String) throws -> T {
@@ -196,35 +190,35 @@ final class GeminiClient: ObservableObject {
         catch { throw GeminiError.bad("Réponse IA illisible, réessaie.") }
     }
 
-    private struct GenResponse: Decodable {
-        struct Cand: Decodable {
-            struct Content: Decodable { struct Part: Decodable { let text: String? }; let parts: [Part]? }
-            let content: Content?
-        }
-        let candidates: [Cand]?
-    }
-
-    // MARK: Réseau (streaming + modèles de secours)
+    // MARK: Réseau
     /// Gemini 3 réfléchit à fond par défaut (lent) : on demande un raisonnement léger.
     private func thinkingConfig(_ model: String) -> [String: Any]? {
         let m = model.lowercased()
-        if m.contains("gemini-3") { return ["thinkingLevel": "low"] }
+        if m.contains("gemini-3") || m.hasSuffix("-latest") { return ["thinkingLevel": "low"] }
         if m.contains("2.5") && m.contains("flash") { return ["thinkingBudget": 0] }
         return nil
     }
 
-    private func makeRequest(model: String, stream: Bool, system: String?, contents: [[String: Any]], json: Bool, thinking: Bool, maxTokens: Int) throws -> URLRequest {
+    private func makeRequest(model: String, stream: Bool, system: String?, contents: [[String: Any]], json: Bool,
+                             thinking: Bool, maxTokens: Int, tools: [[String: Any]]? = nil) throws -> URLRequest {
         let method = stream ? "streamGenerateContent" : "generateContent"
-        var comps = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):\(method)")!
+        guard var comps = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):\(method)") else {
+            throw GeminiError.bad("Nom de modèle invalide : \(model)")
+        }
         var items = [URLQueryItem(name: "key", value: apiKey)]
         if stream { items.append(URLQueryItem(name: "alt", value: "sse")) }
         comps.queryItems = items
+        guard let url = comps.url else { throw GeminiError.bad("Adresse Gemini invalide.") }
         var gen: [String: Any] = ["maxOutputTokens": maxTokens]
         if json { gen["responseMimeType"] = "application/json" }
         if thinking, let t = thinkingConfig(model) { gen["thinkingConfig"] = t }
         var body: [String: Any] = ["contents": contents, "generationConfig": gen]
         if let system { body["systemInstruction"] = ["parts": [["text": system]]] }
-        var req = URLRequest(url: comps.url!)
+        if let tools, !tools.isEmpty {
+            body["tools"] = [["functionDeclarations": tools]]
+            body["toolConfig"] = ["functionCallingConfig": ["mode": "AUTO"]]
+        }
+        var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 40
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -240,12 +234,38 @@ final class GeminiClient: ObservableObject {
         return .fail(code, body)
     }
 
+    /// Extrait le texte et les appels de fonctions d'une réponse (complète ou morceau SSE).
+    private func parseParts(_ data: Data) -> (text: String, calls: [ToolCall]) {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cands = root["candidates"] as? [[String: Any]],
+              let content = cands.first?["content"] as? [String: Any],
+              let parts = content["parts"] as? [[String: Any]] else { return ("", []) }
+        var text = ""
+        var calls: [ToolCall] = []
+        for p in parts {
+            if (p["thought"] as? Bool) == true { continue }
+            if let t = p["text"] as? String { text += t }
+            if let fc = p["functionCall"] as? [String: Any], let name = fc["name"] as? String {
+                let args = (fc["args"] as? [String: Any] ?? [:]).mapValues { JSONValue($0) }
+                calls.append(ToolCall(name: name, args: args))
+            }
+        }
+        return (text, calls)
+    }
+
+    private func failureMessage(_ last: (code: Int, body: String)?, tried: [String]) -> String {
+        guard let last else { return "Gemini ne répond pas. Vérifie ta connexion et réessaie." }
+        if last.code == -1 { return "Réseau : \(last.body). Vérifie ta connexion (et coupe le VPN si besoin)." }
+        if last.code == 0 { return "Gemini a renvoyé une réponse vide sur \(tried.count) modèles. Reformule ou réessaie." }
+        return Self.readable(code: last.code, body: last.body) + " J'ai essayé \(tried.count) modèles (\(tried.joined(separator: ", "))). Réessaie dans une minute."
+    }
+
     private func generate(system: String?, contents: [[String: Any]], json: Bool = false) async throws -> String {
         guard !apiKey.isEmpty else { throw GeminiError.noKey }
         inflight += 1
         defer { inflight -= 1 }
         let models = await candidates()
-        var lastMessage = "Aucun modèle disponible."
+        var last: (code: Int, body: String)?
         for pass in 0..<2 {
             for model in models {
                 var useThinking = true
@@ -257,112 +277,106 @@ final class GeminiClient: ObservableObject {
                         let body = String(data: data, encoding: .utf8) ?? ""
                         switch classify(code, body, useThinking: useThinking) {
                         case .ok:
-                            let r = try JSONDecoder().decode(GenResponse.self, from: data)
-                            let text = r.candidates?.first?.content?.parts?.compactMap(\.text).joined() ?? ""
-                            if text.isEmpty { lastMessage = "Réponse vide de Gemini."; break attempts }
+                            let text = parseParts(data).text
+                            if text.isEmpty { last = (0, ""); break attempts }
                             activeModel = model
                             return text
                         case .dropThinking:
                             useThinking = false
                             continue attempts
                         case .nextModel(let c, let b):
-                            lastMessage = "Erreur Gemini \(c) : \(b.prefix(160))"
+                            last = (c, b)
                             break attempts
                         case .fail(let c, let b):
-                            throw GeminiError.bad("Erreur Gemini \(c) : \(b.prefix(180))")
+                            throw GeminiError.bad(Self.readable(code: c, body: b))
                         }
                     } catch let e as URLError {
-                        lastMessage = "Réseau : \(e.localizedDescription)"
+                        last = (-1, e.localizedDescription)
                         break attempts
                     }
                 }
             }
             if pass == 0 { try? await Task.sleep(for: .seconds(2)) }
         }
-        throw GeminiError.bad(lastMessage)
+        throw GeminiError.bad(failureMessage(last, tried: models))
     }
 
-    /// Chat en streaming : le texte arrive mot par mot via `onDelta`.
-    func streamChat(history: [ChatMessage], store: AppStore, onDelta: @escaping (String) -> Void) async throws {
+    /// Tour de chat en streaming SSE avec function calling : le texte arrive mot par mot via `onDelta`,
+    /// les appels de fonctions sont collectés et renvoyés (jamais interprétés depuis le texte).
+    func chatTurn(history: [ChatMessage], system: String, tools: [[String: Any]], onDelta: @escaping (String) -> Void) async throws -> ChatTurn {
         guard !apiKey.isEmpty else { throw GeminiError.noKey }
         inflight += 1
         defer { inflight -= 1 }
         let contents = chatContents(history)
-        let system = systemPrompt(store)
         let models = await candidates()
-        var lastMessage = "Aucun modèle disponible."
+        var last: (code: Int, body: String)?
         for pass in 0..<2 {
             for model in models {
                 var useThinking = true
                 attempts: while true {
                     do {
-                        let req = try makeRequest(model: model, stream: true, system: system, contents: contents, json: false, thinking: useThinking, maxTokens: 1800)
+                        let req = try makeRequest(model: model, stream: true, system: system, contents: contents, json: false,
+                                                  thinking: useThinking, maxTokens: 2048, tools: tools)
                         let (bytes, resp) = try await session.bytes(for: req)
                         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
                         if code != 200 {
                             var body = ""
-                            for try await l in bytes.lines { body += l; if body.count > 400 { break } }
+                            for try await l in bytes.lines { body += l; if body.count > 600 { break } }
                             switch classify(code, body, useThinking: useThinking) {
                             case .dropThinking:
                                 useThinking = false
                                 continue attempts
                             case .fail(let c, let b):
-                                throw GeminiError.bad("Erreur Gemini \(c) : \(b.prefix(180))")
+                                throw GeminiError.bad(Self.readable(code: c, body: b))
                             case .nextModel(let c, let b):
-                                lastMessage = "Erreur Gemini \(c) : \(b.prefix(160))"
+                                last = (c, b)
                                 break attempts
                             case .ok:
                                 break attempts
                             }
                         }
-                        var got = false
+                        var text = ""
+                        var calls: [ToolCall] = []
                         do {
                             for try await line in bytes.lines {
                                 guard line.hasPrefix("data:") else { continue }
                                 let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                                guard let d = payload.data(using: .utf8), let r = try? JSONDecoder().decode(GenResponse.self, from: d) else { continue }
-                                let t = r.candidates?.first?.content?.parts?.compactMap(\.text).joined() ?? ""
-                                if !t.isEmpty { got = true; onDelta(t) }
+                                let chunk = parseParts(Data(payload.utf8))
+                                if !chunk.text.isEmpty { text += chunk.text; onDelta(chunk.text) }
+                                calls += chunk.calls
                             }
                         } catch {
-                            if got { activeModel = model; return }
+                            // Coupure en plein flux : on garde ce qui est déjà arrivé.
+                            if !text.isEmpty || !calls.isEmpty { activeModel = model; return ChatTurn(text: text, calls: calls, model: model) }
                             throw error
                         }
-                        if got { activeModel = model; return }
-                        lastMessage = "Réponse vide de Gemini."
+                        if !text.isEmpty || !calls.isEmpty {
+                            activeModel = model
+                            return ChatTurn(text: text, calls: calls, model: model)
+                        }
+                        last = (0, "")
                         break attempts
                     } catch let e as URLError {
-                        lastMessage = "Réseau : \(e.localizedDescription)"
+                        last = (-1, e.localizedDescription)
                         break attempts
                     }
                 }
             }
             if pass == 0 { try? await Task.sleep(for: .seconds(2)) }
         }
-        throw GeminiError.bad(lastMessage)
+        throw GeminiError.bad(failureMessage(last, tried: models))
     }
 
     // MARK: Voix naturelle (Gemini TTS) – renvoie un fichier WAV, ou nil si indisponible
-    private struct TTSResponse: Decodable {
-        struct Cand: Decodable {
-            struct Content: Decodable {
-                struct Part: Decodable { struct Inline: Decodable { let data: String }; let inlineData: Inline? }
-                let parts: [Part]?
-            }
-            let content: Content?
-        }
-        let candidates: [Cand]?
-    }
-
-    func synthesizeSpeech(_ text: String, voice: String = "Puck") async -> Data? {
+    func synthesizeSpeech(_ text: String, voice: String = "Puck", style: String = "Dis ceci en français, avec un ton chaleureux et naturel") async -> Data? {
         guard !apiKey.isEmpty else { return nil }
         _ = await candidates()
         let model = ttsModel ?? "gemini-2.5-flash-preview-tts"
         guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(apiKey)") else { return nil }
         let body: [String: Any] = [
-            "contents": [["parts": [["text": "Dis ceci en français, avec l'énergie d'un coach sportif : \(text)"]]]],
+            "contents": [["parts": [["text": "\(style) : \(text)"]]]],
             "generationConfig": ["responseModalities": ["AUDIO"],
-                                 "speechConfig": ["voiceConfig": ["prebuiltVoiceConfig": ["voiceName": voice]]]]
+                                 "speechConfig": ["voiceConfig": ["prebuiltVoiceConfig": ["voiceName": voice]]]] as [String: Any]
         ]
         var req = URLRequest(url: url)
         req.httpMethod = "POST"; req.timeoutInterval = 25
@@ -370,8 +384,12 @@ final class GeminiClient: ObservableObject {
         guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return nil }
         req.httpBody = payload
         guard let (data, resp) = try? await session.data(for: req), (resp as? HTTPURLResponse)?.statusCode == 200,
-              let r = try? JSONDecoder().decode(TTSResponse.self, from: data),
-              let b64 = r.candidates?.first?.content?.parts?.first?.inlineData?.data,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cands = root["candidates"] as? [[String: Any]],
+              let content = cands.first?["content"] as? [String: Any],
+              let parts = content["parts"] as? [[String: Any]],
+              let inline = parts.first?["inlineData"] as? [String: Any],
+              let b64 = inline["data"] as? String,
               let pcm = Data(base64Encoded: b64) else { return nil }
         return Self.wav(fromPCM: pcm)
     }

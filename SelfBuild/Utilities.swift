@@ -14,7 +14,7 @@ enum PhotoStore {
     static func save(_ image: UIImage) -> String? {
         let name = UUID().uuidString + ".jpg"
         guard let data = image.scaled(maxSide: 1600).jpegData(compressionQuality: 0.7) else { return nil }
-        do { try data.write(to: dir.appendingPathComponent(name), options: .atomic); return name } catch { return nil }
+        do { try data.write(to: dir.appendingPathComponent(name), options: [.atomic, .completeFileProtection]); return name } catch { return nil }
     }
     static func load(_ name: String) -> UIImage? { UIImage(contentsOfFile: dir.appendingPathComponent(name).path) }
 }
@@ -86,7 +86,7 @@ enum Biometrics {
     }
 }
 
-// MARK: Météo (Open-Meteo, sans clé) – Le Kef
+// MARK: Météo (Open-Meteo, sans clé) – suit la ville du profil
 struct Weather {
     let temp: Double, code: Int
     var summary: String {
@@ -114,16 +114,38 @@ struct Weather {
     }
 }
 
+struct GeoPlace { let label: String; let lat: Double; let lon: Double }
+
 enum WeatherService {
     private struct R: Decodable {
         struct C: Decodable { let temperature_2m: Double; let weather_code: Int }
         let current: C
     }
-    static func fetch() async -> Weather? {
-        guard let url = URL(string: "https://api.open-meteo.com/v1/forecast?latitude=36.17&longitude=8.70&current=temperature_2m,weather_code"),
+    private struct G: Decodable {
+        struct P: Decodable { let name: String; let latitude: Double; let longitude: Double; let country: String?; let admin1: String? }
+        let results: [P]?
+    }
+
+    /// Météo actuelle (par défaut : Le Kef).
+    static func fetch(lat: Double = 36.17, lon: Double = 8.70) async -> Weather? {
+        let s = String(format: "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&current=temperature_2m,weather_code", lat, lon)
+        guard let url = URL(string: s),
               let (data, _) = try? await URLSession.shared.data(from: url),
               let r = try? JSONDecoder().decode(R.self, from: data) else { return nil }
         return Weather(temp: r.current.temperature_2m, code: r.current.weather_code)
+    }
+
+    /// Recherche d'une ville (géocodage Open-Meteo, sans clé).
+    static func geocode(_ city: String) async -> GeoPlace? {
+        let q = city.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty,
+              let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://geocoding-api.open-meteo.com/v1/search?name=\(enc)&count=1&language=fr&format=json"),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let g = try? JSONDecoder().decode(G.self, from: data),
+              let p = g.results?.first else { return nil }
+        let label = [p.name, p.country].compactMap { $0 }.joined(separator: ", ")
+        return GeoPlace(label: label, lat: p.latitude, lon: p.longitude)
     }
 }
 
@@ -132,25 +154,33 @@ struct SmartButton: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var router: Router
 
-    private var target: (dest: AppDestination, label: String) {
-        if let a = router.aiTarget { return (a, "Nexus te conseille : \(a.title)") }
-        guard let t = store.pending.first else { return (.nexus, "Demander à Nexus") }
+    /// Destination : d'abord la recommandation de Nexus (navigate_to), sinon la tâche en cours / à venir.
+    private var target: (dest: AppDestination, label: String)? {
+        func pick(_ d: AppDestination, _ l: String) -> (dest: AppDestination, label: String)? { (dest: d, label: l) }
+        if let a = router.aiTarget { return pick(a, "Nexus te conseille : \(a.title)") }
+        guard let t = store.pending.first else { return nil }   // planning terminé : le Hub propose « Demander à Nexus »
+        let when = t.start > store.minutesNow ? " · \(timeString(t.start))" : ""
         switch t.kind {
-        case .workout: return (.muscu, "Séance en cours")
-        case .meal: return (.nutrition, "Repas")
-        case .study: return (.study, "Étudier")
-        case .school: return (.study, "Devoirs")
-        case .hygiene: return (.hygiene, "Hygiène")
-        case .rest: return (.running, "Bouger")
-        case .sleep: return (.safe, "Journal du soir")
-        case .other: return t.title.contains("Photos des cours") ? (.lessons, "Photos des cours") : (.nexus, "Nexus")
+        case .workout: return pick(.muscu, "Séance : \(t.title)\(when)")
+        case .meal: return pick(.nutrition, "Repas\(when)")
+        case .study: return pick(.study, "Étudier\(when)")
+        case .school: return pick(.school, "Cours en cours")
+        case .hygiene: return pick(.hygiene, "\(t.title)\(when)")
+        case .rest: return pick(.running, "Bouger\(when)")
+        case .sleep: return pick(.safe, "Journal du soir")
+        case .tutor: return pick(.tutors, "Cours particulier\(when)")
+        case .other:
+            if t.title.contains("Photos des cours") { return pick(.lessons, "Photos des cours\(when)") }
+            return pick(.hub, t.title)
         }
     }
 
     var body: some View {
-        let t = target
-        if t.dest.tabIndex != router.selectedTab {
-            Button { Haptic.tap(); router.go(t.dest) } label: {
+        if let t = target, t.dest.tabIndex != router.selectedTab {
+            Button {
+                Haptic.tap()
+                router.go(t.dest)
+            } label: {
                 HStack(spacing: 8) {
                     Image(systemName: t.dest.icon).foregroundStyle(t.dest.color)
                     Text(t.label).lineLimit(1)
@@ -196,6 +226,7 @@ struct DestinationView: View {
         case .reminders: RemindersView()
         case .lessons: LessonsView()
         case .school: SchoolView()
+        case .journal: JournalView()
         }
     }
 }
