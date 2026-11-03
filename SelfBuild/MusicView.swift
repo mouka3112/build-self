@@ -170,6 +170,9 @@ struct MusicView: View {
                     }
                     .frame(maxWidth: .infinity).padding(20).glassCard(28)
 
+                    Text("AirPlay : touche l'icône (zone de 56 pt). Si tes enceintes n'apparaissent pas, coupe LocalDevVPN : un VPN actif bloque la découverte AirPlay sur le Wi-Fi.")
+                        .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+
                     VStack(alignment: .leading, spacing: 12) {
                         Label("Bruits d'ambiance (hors-ligne)", systemImage: "waveform").font(.headline)
                         Picker("Type", selection: $music.noiseKind) {

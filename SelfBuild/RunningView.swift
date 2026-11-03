@@ -61,12 +61,12 @@ final class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
             let step = max(1, route.count / 300)
             let pts = route.enumerated().filter { $0.offset % step == 0 }
                 .map { Coord(lat: $0.element.latitude, lon: $0.element.longitude) }
-            store.runs.append(RunRecord(date: .now, distance: distance, duration: elapsed, route: pts))
+            store.engine.apply(.add(.runRecord(RunRecord(date: .now, distance: distance, duration: elapsed, route: pts))))
         }
         LiveActivityManager.shared.end()
         MusicManager.shared.duck(false)
         MusicManager.shared.runMode = false
-        say("Bravo Melik, course terminée ! Étire-toi et bois de l'eau.")
+        say("Bravo \(store?.firstName ?? ""), course terminée ! Étire-toi et bois de l'eau.")
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -116,7 +116,7 @@ final class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         let fallback = ["Beau rythme, continue comme ça !", "Respire profondément, tu gères.",
                         "Chaque pas construit ta discipline.", "Reste régulier, tu es plus fort que tu ne le crois."].randomElement() ?? "Allez !"
         let prompt = """
-        Tu es le coach de course vocal de Melik (15 ans, débutant). \(reason)
+        Tu es le coach de course vocal de \(store?.aiPersona ?? "l'utilisateur"), débutant. \(reason)
         Stats : distance \(String(format: "%.2f", distance / 1000)) km, temps \(elapsed / 60) min \(elapsed % 60) s, allure moyenne \(fmtPace(avg)) min/km, allure de la dernière minute \(fmtPace(recentPace)) min/km.
         Musiques disponibles : \(titles.isEmpty ? "aucune" : titles.joined(separator: " | ")). Musique actuelle : \(now).
         Adapte-toi : allure qui chute → relance avec une musique plus énergique ; trop vite au début → conseille de ralentir ; bon rythme → félicite.
@@ -208,7 +208,7 @@ struct RunningView: View {
                                     Spacer()
                                     Text(String(format: "%.2f km · %d min", r.distance / 1000, r.duration / 60)).monospacedDigit()
                                 }
-                                .contextMenu { Button("Supprimer", role: .destructive) { store.runs.removeAll { $0.id == r.id } } }
+                                .contextMenu { Button("Supprimer", role: .destructive) { store.engine.apply(.delete(.runRecord(r.id))) } }
                             }
                         }
                         .padding(16).frame(maxWidth: .infinity, alignment: .leading).glassCard(24)

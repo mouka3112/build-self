@@ -354,7 +354,7 @@ enum Program {
 }
 
 // MARK: - Cartes nutrition (valeurs moyennes pour 100 g d'aliment cuit)
-struct FoodCard: Identifiable, Codable {
+struct FoodCard: Identifiable, Codable, Hashable {
     let id: String
     let name: String, emoji: String
     let kcal100: Double, protein100: Double, portion: Double

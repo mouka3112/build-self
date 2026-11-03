@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct PlusView: View {
-    private let items: [AppDestination] = [.study, .school, .lessons, .reminders, .hygiene, .finance, .wardrobe, .kitchen, .running, .music, .projects, .challenges, .capsule, .reports, .health, .safe, .notes, .settings]
+    private let items: [AppDestination] = [.study, .school, .lessons, .reminders, .hygiene, .finance, .tutors, .wardrobe, .kitchen, .running, .music,
+                                           .projects, .challenges, .capsule, .reports, .health, .safe, .notes, .journal, .settings]
 
     var body: some View {
         NavigationStack {
@@ -21,8 +22,10 @@ struct PlusView: View {
                             }
                             .buttonStyle(PressStyle())
                         }
-                    }.padding()
+                    }
+                    .padding()
                 }
+                .scrollDismissesKeyboard(.interactively)
             }
             .navigationTitle("Plus")
         }
@@ -47,26 +50,27 @@ struct StudyView: View {
                     NavigationLink { LessonsView().hideKeyboardOnTap() } label: {
                         Label("Mes cours en photos", systemImage: "photo.stack.fill").frame(maxWidth: .infinity, alignment: .leading).padding(16).glassCard(22)
                     }.buttonStyle(PressStyle())
+                    NavigationLink { TutorsView().hideKeyboardOnTap() } label: {
+                        Label("Cours particuliers (دروس خصوصية)", systemImage: "person.2.fill").frame(maxWidth: .infinity, alignment: .leading).padding(16).glassCard(22)
+                    }.buttonStyle(PressStyle())
+
                     VStack(alignment: .leading, spacing: 12) {
                         Label("Mode Lockdown", systemImage: "lock.fill").font(.headline)
-                        Text("Écran verrouillé et concentré. Pour sortir : prouve tes devoirs avec une photo analysée par Nexus.")
+                        Text("Plein écran, compte à rebours, bruit d'ambiance. Pour sortir : prouve tes devoirs avec une photo analysée par Nexus.")
                             .font(.caption).foregroundStyle(.secondary)
                         Picker("Durée", selection: $lockMinutes) {
                             ForEach([30, 45, 60, 90, 120], id: \.self) { Text("\($0) min").tag($0) }
                         }.pickerStyle(.segmented)
-                        Button {
-                            store.lockdownEnd = Date().addingTimeInterval(Double(lockMinutes) * 60)
-                            store.lockdownActive = true
-                            LiveActivityManager.shared.start(mode: "focus", title: "Lockdown", subtitle: "Devoirs d'abord", minutes: lockMinutes)
-                            if UserDefaults.standard.object(forKey: "autoNoise") as? Bool ?? true { MusicManager.shared.startNoise() }
-                        } label: { Text("Activer le Lockdown") }
+                        Button { startLockdown() } label: { Text("Activer le Lockdown") }
                             .buttonStyle(GlassButtonStyle(prominent: true))
+                        Text("Limite iOS : le verrouillage ne s'applique qu'à SELF BUILD. Bloquer les autres apps exige FamilyControls (compte développeur payant).")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                     .padding(16).glassCard(24)
 
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Devoirs").font(.headline)
-                        if store.homework.isEmpty { Text("Aucun devoir. Appuie sur + pour en ajouter.").foregroundStyle(.secondary) }
+                        if store.homework.isEmpty { Text("Aucun devoir. Appuie sur + (ou dis-le à Nexus).").foregroundStyle(.secondary) }
                         ForEach(store.homework.sorted { $0.due < $1.due }) { hw in
                             HStack(spacing: 12) {
                                 Button { toggle(hw) } label: { Image(systemName: hw.done ? "checkmark.circle.fill" : "circle").font(.title2) }
@@ -78,13 +82,16 @@ struct StudyView: View {
                                 Text(hw.due, format: .dateTime.day().month(.abbreviated)).font(.caption.monospacedDigit())
                             }
                             .opacity(hw.done ? 0.45 : 1)
-                            .contextMenu { Button("Supprimer", role: .destructive) { store.homework.removeAll { $0.id == hw.id } } }
+                            .contextMenu {
+                                Button("Supprimer", role: .destructive) { store.engine.apply(.delete(.homework(hw.id))) }
+                            }
                         }
                     }
                     .padding(16).frame(maxWidth: .infinity, alignment: .leading).glassCard(24)
                 }
                 .padding()
             }
+            .scrollDismissesKeyboard(.interactively)
         }
         .navigationTitle("Études")
         .toolbar { Button { showAdd = true } label: { Image(systemName: "plus") } }
@@ -92,7 +99,15 @@ struct StudyView: View {
     }
 
     private func toggle(_ hw: Homework) {
-        if let i = store.homework.firstIndex(where: { $0.id == hw.id }) { store.homework[i].done.toggle() }
+        let r = store.engine.apply(hw.done ? .reopenHomework(id: hw.id) : .completeHomework(ref: hw.id.uuidString))
+        if r.status == .applied { Haptic.tap() }
+    }
+
+    private func startLockdown() {
+        store.engine.apply(.setLockdown(minutes: lockMinutes))
+        LiveActivityManager.shared.start(mode: "focus", title: "Lockdown", subtitle: "Devoirs d'abord", minutes: lockMinutes)
+        if UserDefaults.standard.object(forKey: "autoNoise") as? Bool ?? true { MusicManager.shared.startNoise() }
+        Haptic.success()
     }
 }
 
@@ -102,13 +117,18 @@ struct AddHomeworkSheet: View {
     @State private var subject = "Maths"
     @State private var title = ""
     @State private var due = Calendar.current.date(byAdding: .day, value: 1, to: .now) ?? .now
+    @State private var error = ""
 
     var body: some View {
         NavigationStack {
             Form {
-                Picker("Matière", selection: $subject) { ForEach(schoolSubjects, id: \.self) { Text($0) } }
-                TextField("Intitulé (ex : exercices p.45)", text: $title)
-                DatePicker("Rendu le", selection: $due, displayedComponents: .date)
+                Picker("Matière", selection: $subject) { ForEach(store.subjectList, id: \.self) { Text($0) } }
+                HStack {
+                    TextField("Intitulé (ex : exercices p.45)", text: $title)
+                    DictationButton(text: $title)
+                }
+                DatePicker("Rendu le", selection: $due, in: Calendar.current.startOfDay(for: .now)..., displayedComponents: .date)
+                if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.secondary) }
             }
             .scrollContentBackground(.hidden)
             .background(AppBackground())
@@ -117,13 +137,14 @@ struct AddHomeworkSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Ajouter") {
-                        store.homework.append(Homework(subject: subject, title: title.isEmpty ? "Devoir" : title, due: due))
-                        dismiss()
+                        let r = store.engine.apply(.homework(subject: subject, title: title.isEmpty ? "Devoir" : title, due: due))
+                        if r.status == .applied { Haptic.success(); dismiss() } else { error = r.summary }
                     }
                 }
             }
         }
         .hideKeyboardOnTap()
+        .onAppear { if let s = store.subjectList.first, !store.subjectList.contains(subject) { subject = s } }
     }
 }
 
@@ -135,19 +156,23 @@ struct LockdownView: View {
     @State private var showPicker = false
     @State private var checking = false
     @State private var feedback = ""
+    @State private var holding = false
 
     var body: some View {
         ZStack {
             AppBackground()
             VStack(spacing: 20) {
-                Image(systemName: "lock.fill").font(.system(size: 44))
-                    .onLongPressGesture(minimumDuration: 5) { unlock() }     // sortie de secours (bug réseau/IA) : maintiens 5 s
+                Image(systemName: holding ? "lock.open.fill" : "lock.fill").font(.system(size: 44))
+                    .scaleEffect(holding ? 1.2 : 1)
+                    .animation(.easeInOut(duration: 5), value: holding)
+                    // Sortie de secours (bug réseau / IA) : maintenir le cadenas 5 secondes.
+                    .onLongPressGesture(minimumDuration: 5, perform: { unlock(emergency: true) }, onPressingChanged: { holding = $0 })
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
                     let rem = max(0, Int((store.lockdownEnd ?? ctx.date).timeIntervalSince(ctx.date)))
                     Text(String(format: "%02d:%02d", rem / 60, rem % 60))
                         .font(.system(size: 64, weight: .bold, design: .rounded).monospacedDigit())
                 }
-                Text("Concentre-toi. Les devoirs d'abord.").foregroundStyle(.secondary)
+                Text("Concentre-toi, \(store.displayName). Les devoirs d'abord.").foregroundStyle(.secondary)
 
                 if !store.pendingHomework.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
@@ -159,7 +184,7 @@ struct LockdownView: View {
                 }
 
                 if store.pendingHomework.isEmpty {
-                    Button { unlock() } label: { Text("Terminer le Lockdown") }.buttonStyle(GlassButtonStyle(prominent: true))
+                    Button { unlock(emergency: false) } label: { Text("Terminer le Lockdown") }.buttonStyle(GlassButtonStyle(prominent: true))
                 } else {
                     Button { showPicker = true } label: { Label("Valider mes devoirs en photo", systemImage: "camera.fill") }
                         .buttonStyle(GlassButtonStyle(prominent: true))
@@ -168,6 +193,7 @@ struct LockdownView: View {
                 if checking { ProgressView("Nexus vérifie…") }
                 if !feedback.isEmpty { Text(feedback).multilineTextAlignment(.center).padding(.horizontal) }
                 Spacer()
+                Text("Sortie de secours : maintiens le cadenas 5 secondes.").font(.caption2).foregroundStyle(.secondary)
             }
             .padding()
             .padding(.top, 30)
@@ -180,25 +206,29 @@ struct LockdownView: View {
         checking = true; feedback = ""
         Task {
             do {
-                let r = try await gemini.validateHomework(image: image, pending: pending)
+                let r = try await gemini.validateHomework(image: image, pending: pending, name: store.displayName)
                 feedback = r.comment
                 if r.valid {
                     for idx in r.validatedIndices where idx >= 1 && idx <= pending.count {
-                        if let i = store.homework.firstIndex(where: { $0.id == pending[idx - 1].id }) { store.homework[i].done = true }
+                        store.engine.apply(.completeHomework(ref: pending[idx - 1].id.uuidString))
                     }
-                    if store.pendingHomework.isEmpty { Haptic.success(); unlock() }
+                    if store.pendingHomework.isEmpty { Haptic.success(); unlock(emergency: false) }
                 } else { Haptic.warn() }
             } catch { feedback = error.localizedDescription }
             checking = false
         }
     }
 
-    private func unlock() {
-        store.lockdownActive = false
-        store.lockdownEnd = nil
+    private func unlock(emergency: Bool) {
+        store.engine.apply(.setLockdown(minutes: nil))
         LiveActivityManager.shared.end()
         MusicManager.shared.stopNoise()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { router.wrapUp = WrapUpRequest(kind: "study") }
+        if !emergency {
+            Task {
+                try? await Task.sleep(for: .milliseconds(700))
+                router.wrapUp = WrapUpRequest(kind: "study")
+            }
+        }
     }
 }
 
@@ -213,6 +243,7 @@ struct FinanceView: View {
     @State private var showPicker = false
     @State private var scanning = false
     @State private var message = ""
+    @State private var showAll = false
 
     var body: some View {
         ZStack {
@@ -221,8 +252,9 @@ struct FinanceView: View {
                 VStack(spacing: 16) {
                     VStack(spacing: 4) {
                         Text("Solde disponible").font(.caption).foregroundStyle(.secondary)
-                        Text(String(format: "%.2f TND", store.balance)).font(.system(size: 40, weight: .bold, design: .rounded))
-                        Text(String(format: "Dépensé ce mois : %.2f TND", store.monthSpent)).font(.caption).foregroundStyle(.secondary)
+                        Text(Fmt.money(store.balance, store.currency)).font(.system(size: 40, weight: .bold, design: .rounded))
+                            .foregroundStyle(store.balance < 0 ? Color(red: 1.0, green: 0.55, blue: 0.4) : AppDestination.finance.color)
+                        Text("Dépensé ce mois : \(Fmt.money(store.monthSpent, store.currency))").font(.caption).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity).padding(20).glassCard(28)
 
@@ -233,7 +265,7 @@ struct FinanceView: View {
 
                     HStack(spacing: 10) {
                         Button { showIncome = true } label: { Label("Argent reçu", systemImage: "plus") }.buttonStyle(GlassButtonStyle())
-                        Button { showPicker = true } label: { Label("Scanner", systemImage: "doc.text.viewfinder") }.buttonStyle(GlassButtonStyle())
+                        Button { showPicker = true } label: { Label("Scanner un ticket", systemImage: "doc.text.viewfinder") }.buttonStyle(GlassButtonStyle())
                     }
 
                     VStack(alignment: .leading, spacing: 12) {
@@ -270,18 +302,27 @@ struct FinanceView: View {
                     if !message.isEmpty { Text(message).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center) }
 
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Historique").font(.headline)
-                        ForEach(store.txns.sorted { $0.date > $1.date }.prefix(20)) { t in
+                        HStack {
+                            Text("Historique").font(.headline)
+                            Spacer()
+                            if store.txns.count > 20 { Button(showAll ? "Moins" : "Tout voir") { showAll.toggle() }.font(.caption) }
+                        }
+                        if store.txns.isEmpty { Text("Aucune opération.").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(store.txns.sorted { $0.date > $1.date }.prefix(showAll ? 500 : 20)) { t in
                             HStack {
                                 VStack(alignment: .leading) {
                                     Text(t.note.isEmpty ? t.category : t.note)
                                     Text("\(t.category) · \(t.date.formatted(.dateTime.day().month(.abbreviated)))").font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text(String(format: "%+.2f", t.amount)).monospacedDigit()
+                                Text(Fmt.signedMoney(t.amount, store.currency)).monospacedDigit()
+                                Button { store.engine.apply(.delete(.txn(t.id))); Haptic.tap() } label: {
+                                    Image(systemName: "trash").font(.caption).foregroundStyle(.secondary).frame(width: 32, height: 32)
+                                }
+                                .buttonStyle(PressStyle())
                             }
-                            .contextMenu { Button("Supprimer", role: .destructive) { store.txns.removeAll { $0.id == t.id } } }
                         }
+                        Text("Une suppression se rattrape avec « Annuler » dans le Journal Nexus.").font(.caption2).foregroundStyle(.secondary)
                     }
                     .padding(16).frame(maxWidth: .infinity, alignment: .leading).glassCard(24)
                 }
@@ -290,11 +331,12 @@ struct FinanceView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .navigationTitle("Finances")
-        .alert("Argent reçu (TND)", isPresented: $showIncome) {
+        .alert("Argent reçu (\(store.currency))", isPresented: $showIncome) {
             TextField("Montant", text: $incomeText).keyboardType(.decimalPad)
             Button("Ajouter") {
-                if let a = Double(incomeText.replacingOccurrences(of: ",", with: ".")), a > 0 {
-                    store.txns.append(Txn(date: .now, amount: a, category: "Revenu", note: "Argent de poche"))
+                if let a = Double(incomeText.replacingOccurrences(of: ",", with: ".")) {
+                    let r = store.engine.apply(.income(amount: a, note: "Argent de poche"))
+                    message = r.summary
                 }
                 incomeText = ""
             }
@@ -306,18 +348,18 @@ struct FinanceView: View {
     private func spend(_ amount: Double) {
         guard amount > 0 else { return }
         guard let category else { Haptic.warn(); message = "Choisis d'abord une catégorie."; return }
-        store.txns.append(Txn(date: .now, amount: -amount, category: category, note: ""))
-        message = String(format: "−%.2f TND · %@", amount, category)
-        Haptic.success()
+        let r = store.engine.apply(.expense(amount: amount, category: category, note: ""))
+        message = r.summary
+        if r.status == .applied { Haptic.success() } else { Haptic.warn() }
     }
 
     private func scan(_ image: UIImage) {
         scanning = true; message = ""
         Task {
             do {
-                let r = try await gemini.scanReceipt(image: image)
-                store.txns.append(Txn(date: .now, amount: -abs(r.amount), category: r.category, note: r.note))
-                message = String(format: "Ticket ajouté : −%.3f TND · %@ (%@)", abs(r.amount), r.category, r.note)
+                let t = try await gemini.scanReceipt(image: image)
+                let r = store.engine.apply(.expense(amount: abs(t.amount), category: t.category, note: t.note))
+                message = "Ticket : " + r.summary
                 Haptic.success()
             } catch { message = error.localizedDescription }
             scanning = false
@@ -342,19 +384,19 @@ struct NotesView: View {
                             Button {
                                 let t = draft.trimmingCharacters(in: .whitespacesAndNewlines)
                                 guard !t.isEmpty else { return }
-                                store.notes.insert(NoteItem(date: .now, text: t), at: 0); draft = ""
+                                store.engine.apply(.note(text: t)); draft = ""; Haptic.success()
                             } label: { Image(systemName: "checkmark.circle.fill").font(.title).frame(width: 44, height: 44) }
                         }
                     }
                     .padding(14).glassCard(24)
 
-                    ForEach(store.notes) { n in
+                    ForEach(store.notes.sorted { $0.date > $1.date }) { n in
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(n.text)
+                            Text(n.text).textSelection(.enabled)
                             Text(n.date, format: .dateTime.day().month().hour().minute()).font(.caption).foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading).padding(16).glassCard(20)
-                        .contextMenu { Button("Supprimer", role: .destructive) { store.notes.removeAll { $0.id == n.id } } }
+                        .contextMenu { Button("Supprimer", role: .destructive) { store.engine.apply(.delete(.note(n.id))) } }
                     }
                 }
                 .padding()
@@ -374,15 +416,51 @@ struct SettingsView: View {
     @AppStorage("autoNoise") private var autoNoise = true
     @ObservedObject private var live = LiveActivityManager.shared
     @State private var info = ""
+    @State private var keyStatus = ""
+    @State private var testing = false
+    @State private var editProfile = false
 
     var body: some View {
         Form {
+            Section("Profil") {
+                let p = store.profileOrDefault
+                Text("\(store.displayName) · \(p.age) ans · \(Int(p.heightCm)) cm · \(fmtKg(p.weightKg)) kg").font(.subheadline)
+                Text("\(p.cityLabel) · \(p.currency) · réveil \(timeString(p.wakeMinute)), coucher \(timeString(p.bedMinute))").font(.caption).foregroundStyle(.secondary)
+                Button("Modifier mon profil, mes objectifs et mon rythme") { editProfile = true }
+            }
             Section("Clé API Gemini") {
                 SecureField("Colle ta clé (aistudio.google.com/apikey)", text: $key)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                HStack {
+                    Button("Coller") { if let s = UIPasteboard.general.string { key = s.trimmingCharacters(in: .whitespacesAndNewlines) } }
+                    Spacer()
+                    Button(testing ? "Test…" : "Tester la clé") {
+                        testing = true
+                        Task { let r = await gemini.testKey(key); keyStatus = r.message; testing = false }
+                    }
+                    .disabled(testing || key.isEmpty)
+                }
+                .buttonStyle(.borderless)
+                if !keyStatus.isEmpty { Text(keyStatus).font(.caption) }
+                Link("Créer une clé gratuite sur Google AI Studio", destination: URL(string: "https://aistudio.google.com/apikey")!)
             }
-            Section("Modèle IA (laisse vide = automatique)") {
+            Section("Modèle IA (vide = \(GeminiClient.defaultModel))") {
                 TextField(GeminiClient.defaultModel, text: $model).textInputAutocapitalization(.never).autocorrectionDisabled()
+                if !gemini.availableModels.isEmpty {
+                    Picker("Choisir dans la liste", selection: $model) {
+                        Text("Automatique").tag("")
+                        ForEach(gemini.availableModels, id: \.self) { Text($0).tag($0) }
+                    }
+                }
                 if !gemini.activeModel.isEmpty { Text("Dernier modèle utilisé : \(gemini.activeModel)").font(.caption).foregroundStyle(.secondary) }
+                Text("Si Google répond 503/429, l'app essaie automatiquement d'autres modèles flash.").font(.caption2).foregroundStyle(.secondary)
+            }
+            Section("Objectifs quotidiens") {
+                Stepper(value: $store.calorieGoal, in: 1500...5000, step: 50) { Text("Calories : \(Int(store.calorieGoal)) kcal") }
+                Stepper(value: $store.proteinGoal, in: 40...250, step: 5) { Text("Protéines : \(Int(store.proteinGoal)) g") }
+                Text("Les estimations nutritionnelles de l'IA sont approximatives.").font(.caption2).foregroundStyle(.secondary)
+            }
+            Section("Focus") {
                 Toggle("Bruit d'ambiance en Lockdown", isOn: $autoNoise)
             }
             Section("Dynamic Island") {
@@ -391,24 +469,25 @@ struct SettingsView: View {
                     LiveActivityManager.shared.start(mode: "focus", title: "Test SELF BUILD", subtitle: "Quitte l'app pour la voir", minutes: 2)
                 }
                 Button("Arrêter") { LiveActivityManager.shared.end() }
-            }
-            Section("Objectifs quotidiens") {
-                Stepper(value: $store.calorieGoal, in: 1500...5000, step: 100) { Text("Calories : \(Int(store.calorieGoal)) kcal") }
-                Stepper(value: $store.proteinGoal, in: 50...250, step: 5) { Text("Protéines : \(Int(store.proteinGoal)) g") }
+                Text("La Live Activity n'est visible que HORS de l'app (écran d'accueil ou verrouillé). iOS interdit les animations continues : Nexus change de pose toutes les ~8 s tant que l'app tourne.")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
             Section("Actions") {
-                Button("Régénérer le planning du jour") { store.resetToday() }
-                Button("Reprogrammer les rappels IA") {
+                Button("Régénérer le planning du jour") { store.resetToday(); info = "Planning régénéré."; Haptic.success() }
+                Button("Reprogrammer les rappels (tâches + IA)") {
                     Task {
                         await NotificationManager.shared.refreshProactive(store: store, gemini: gemini)
                         info = "Rappels reprogrammés."
                     }
                 }
                 if !info.isEmpty { Text(info).font(.caption).foregroundStyle(.secondary) }
+                Text("Notifications « urgentes » : sans l'entitlement payant Time Sensitive, iOS peut les afficher comme des notifications normales.")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
         }
         .scrollContentBackground(.hidden)
         .background(AppBackground())
         .navigationTitle("Réglages")
+        .sheet(isPresented: $editProfile) { OnboardingView() }
     }
 }

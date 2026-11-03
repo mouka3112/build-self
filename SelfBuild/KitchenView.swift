@@ -85,7 +85,7 @@ struct KitchenView: View {
                 recipe = try await gemini.text("""
                 Stock disponible : \(store.kitchenStock).
                 Goûts connus : \(store.tasteProfile.isEmpty ? "inconnus" : store.tasteProfile).
-                Propose UNE recette simple pour un débutant de 15 ans qui veut manger riche en protéines (objectif ≈ \(Int(store.proteinGoal)) g/jour).
+                Propose UNE recette simple pour \(store.aiPersona), débutant en cuisine, qui veut manger riche en protéines (objectif ≈ \(Int(store.proteinGoal)) g/jour).
                 Format : nom, ingrédients (parmi le stock, tu peux ajouter 2-3 basiques), étapes courtes numérotées, temps, calories et protéines estimées. Max 170 mots.
                 """, store: store)
             } catch { recipe = error.localizedDescription }
@@ -99,11 +99,11 @@ struct KitchenView: View {
         Task {
             do {
                 let r = try await gemini.json(DishRating.self, """
-                Photo du plat que Melik (15 ans) vient de préparer : « \(name) ». Il dit l'avoir \(liked ? "aimé" : "peu aimé").
+                Photo du plat que \(store.aiPersona) vient de préparer : « \(name) ». Il dit l'avoir \(liked ? "aimé" : "peu aimé").
                 Profil de goûts actuel : \(store.tasteProfile.isEmpty ? "inconnu" : store.tasteProfile)
                 JSON uniquement : {"score": note sur 10 (présentation + équilibre apparent), "comment": "2 phrases d'encouragement + 1 conseil concret", "updatedProfile": "profil de goûts mis à jour, 3 phrases max"}
                 """, image: img, store: store)
-                store.dishes.append(DishLog(date: .now, name: name, score: r.score, comment: r.comment, liked: liked, photo: PhotoStore.save(img)))
+                store.engine.apply(.add(.dish(DishLog(date: .now, name: name, score: max(0, min(10, r.score)), comment: r.comment, liked: liked, photo: PhotoStore.save(img)))))
                 store.tasteProfile = r.updatedProfile
                 result = "\(r.score)/10 – \(r.comment)"
                 Haptic.success()

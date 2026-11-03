@@ -14,7 +14,7 @@ struct PeriodStats {
     var text: String {
         """
         Période : \(days) jours. Séances muscu : \(sessions)/\(sessionsGoal). Calories moy. : \(Int(avgKcal)) kcal/j, protéines moy. : \(Int(avgProtein)) g/j (objectif protéines atteint \(proteinDays)/\(max(foodDays,1)) jours).
-        Devoirs rendus : \(homeworkDone)/\(homeworkTotal). Hygiène : \(Int(hygienePct * 100))%. Défis : \(challengesDone)/\(challengesTotal). Course : \(String(format: "%.1f", runKm)) km. Dépenses : \(String(format: "%.2f", spent)) TND.
+        Devoirs rendus : \(homeworkDone)/\(homeworkTotal). Hygiène : \(Int(hygienePct * 100))%. Défis : \(challengesDone)/\(challengesTotal). Course : \(String(format: "%.1f", runKm)) km. Dépenses : \(String(format: "%.2f", spent)).
         Points améliorés : \(improved.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ")). Points en baisse : \(worsened.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ")).
         """
     }
@@ -139,7 +139,7 @@ struct ReportsView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Détails").font(.headline)
                         Text("Calories moyennes : \(Int(s.avgKcal)) kcal/jour")
-                        Text(String(format: "Dépenses : %.2f TND", s.spent))
+                        Text("Dépenses : \(Fmt.money(s.spent, store.currency))")
                         if !s.improved.isEmpty { Text("↑ " + s.improved.sorted { $0.value > $1.value }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ")) }
                         if !s.worsened.isEmpty { Text("↓ " + s.worsened.sorted { $0.value > $1.value }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ")) }
                     }
@@ -208,7 +208,7 @@ struct ProgressPhotosView: View {
                                     Text(r.date, format: .dateTime.day().month(.abbreviated).year()).font(.caption).foregroundStyle(.secondary)
                                 }
                                 .contextMenu {
-                                    Button("Supprimer", role: .destructive) { store.reviews.removeAll { $0.id == r.id } }
+                                    Button("Supprimer", role: .destructive) { store.engine.apply(.delete(.review(r.id))) }
                                 }
                             }
                         }.padding()

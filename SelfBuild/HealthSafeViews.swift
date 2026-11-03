@@ -10,8 +10,8 @@ enum HealthReport {
         let entries = store.healthLog.filter { $0.date >= start }.sorted { $0.date < $1.date }
         let fmt = DateFormatter(); fmt.dateFormat = "dd/MM HH:mm"
         let st = store.stats(days: max(days, 1))
-        var lines = ["RAPPORT SANTÉ – Melik", "Période : \(days) derniers jours (généré le \(fmt.string(from: .now)))",
-                     "Journal personnel, pas un diagnostic.", "",
+        var lines = ["RAPPORT SANTÉ – \(store.firstName.isEmpty ? "SELF BUILD" : store.firstName)", "Période : \(days) derniers jours (généré le \(fmt.string(from: .now)))",
+                     "Journal personnel : il ne remplace pas un avis médical.", "",
                      "Résumé : calories moy. \(Int(st.avgKcal)) kcal/j, protéines moy. \(Int(st.avgProtein)) g/j, séances de sport \(st.sessions), hygiène \(Int(st.hygienePct * 100))%.", "",
                      "Entrées :"]
         lines += entries.map { "\(fmt.string(from: $0.date))  [\($0.kind)]  \($0.text)" }
@@ -44,9 +44,7 @@ struct HealthView: View {
     @State private var reportURL: URL?
     private let kinds = ["Symptôme", "Médicament", "Sommeil", "Énergie", "Autre"]
 
-    private var waterToday: Int {
-        store.healthLog.filter { $0.kind == "Eau" && Calendar.current.isDateInToday($0.date) }.count * 250
-    }
+    private var waterToday: Int { store.waterToday }
 
     var body: some View {
         ZStack {
@@ -58,7 +56,7 @@ struct HealthView: View {
                             Text("💧 \(waterToday) ml").font(.title2.bold()); Text("eau aujourd'hui (objectif ≈ 2 L)").font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button { store.healthLog.append(HealthEntry(date: .now, kind: "Eau", text: "250 ml")); Haptic.tap() } label: {
+                        Button { store.engine.apply(.water(ml: 250)); Haptic.tap() } label: {
                             Text("+250 ml").font(.headline).padding(.horizontal, 16).padding(.vertical, 10).glassCard(18)
                         }.buttonStyle(PressStyle())
                     }
@@ -72,7 +70,7 @@ struct HealthView: View {
                         }.padding(12).glassCard(14)
                         Button {
                             guard !text.isEmpty else { return }
-                            store.healthLog.append(HealthEntry(date: .now, kind: kind, text: text)); text = ""; Haptic.success()
+                            store.engine.apply(.health(kind: kind, text: text)); text = ""; Haptic.success()
                         } label: { Label("Ajouter au journal", systemImage: "plus") }.buttonStyle(GlassButtonStyle(prominent: true))
                     }
                     .padding(16).glassCard(24)
@@ -95,7 +93,7 @@ struct HealthView: View {
                                 Text("\(e.kind) – \(e.text)")
                                 Spacer()
                             }
-                            .contextMenu { Button("Supprimer", role: .destructive) { store.healthLog.removeAll { $0.id == e.id } } }
+                            .contextMenu { Button("Supprimer", role: .destructive) { store.engine.apply(.delete(.health(e.id))) } }
                         }
                     }
                     .padding(16).frame(maxWidth: .infinity, alignment: .leading).glassCard(24)
@@ -131,12 +129,14 @@ private struct MoodResult: Decodable { let mood: Int; let label: String; let adv
 
 struct SafeSpaceView: View {
     @EnvironmentObject var gemini: GeminiClient
+    @EnvironmentObject var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var safe = SafeStore()
     @State private var unlocked = false
     @State private var text = ""
     @State private var busy = false
     @State private var confirmAI: SafeEntry?
+    @State private var analysisError = ""
 
     var body: some View {
         ZStack {
@@ -173,6 +173,9 @@ struct SafeSpaceView: View {
                 .padding(16).glassCard(24)
 
                 if busy { ProgressView("Nexus lit avec bienveillance…") }
+                if !analysisError.isEmpty { Text(analysisError).font(.caption).foregroundStyle(.secondary) }
+                Text("Rien de ce journal n'est envoyé à l'IA, sauf l'entrée que tu choisis d'analyser. Si ça ne va pas, parles-en à un adulte de confiance.")
+                    .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
 
                 ForEach(safe.entries.sorted { $0.date > $1.date }) { e in
                     VStack(alignment: .leading, spacing: 8) {
@@ -213,14 +216,14 @@ struct SafeSpaceView: View {
         Task {
             do {
                 let r = try await gemini.json(MoodResult.self, """
-                Voici une entrée de journal intime de Melik, 15 ans : « \(e.text) »
+                Voici une entrée de journal intime de \(store.aiPersona) : « \(e.text) »
                 Estime son humeur et réponds avec bienveillance. JSON uniquement : {"mood": entier 1 à 10, "label": "un mot", "advice": "2 phrases chaleureuses et un petit conseil concret"}
                 Si tu perçois une détresse sérieuse, encourage-le avec douceur à en parler à un adulte de confiance (parent, conseiller du lycée, médecin).
                 """)
                 if let i = safe.entries.firstIndex(where: { $0.id == e.id }) {
                     safe.entries[i].mood = r.mood; safe.entries[i].moodLabel = r.label; safe.entries[i].advice = r.advice; safe.save()
                 }
-            } catch {}
+            } catch { analysisError = error.localizedDescription }
             busy = false
         }
     }

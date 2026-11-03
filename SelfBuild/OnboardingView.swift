@@ -5,6 +5,7 @@ import UIKit
 struct OnboardingView: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var gemini: GeminiClient
+    @Environment(\.dismiss) private var dismiss
     @AppStorage("geminiKey") private var key = ""
     @State private var step = 0
     @State private var p = UserProfile()
@@ -270,6 +271,7 @@ struct OnboardingView: View {
         }
         store.completeOnboarding(p, kcal: kcal, protein: protein)
         Haptic.success()
+        dismiss()       // ouvert depuis Réglages : referme la feuille (sans effet au premier lancement)
     }
 }
 

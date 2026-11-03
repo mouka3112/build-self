@@ -35,7 +35,7 @@ struct WardrobeView: View {
                             TextField("Nom de l'habit (ex : hoodie noir)", text: $name).padding(12).glassCard(14)
                             Button {
                                 guard !name.isEmpty else { return }
-                                store.wardrobe.append(ClothingItem(name: name, category: category)); name = ""
+                                store.engine.apply(.add(.clothing(ClothingItem(name: name, category: category)))); name = ""
                             } label: { Image(systemName: "plus.circle.fill").font(.title) }
                         }
                     }
@@ -58,14 +58,16 @@ struct WardrobeView: View {
                                                 .overlay { if !it.clean { Capsule().stroke(Color.white.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [3])) } }
                                         }
                                     }
-                                    .contextMenu { Button("Supprimer", role: .destructive) { store.wardrobe.removeAll { $0.id == it.id } } }
+                                    .contextMenu { Button("Supprimer", role: .destructive) { store.engine.apply(.delete(.clothing(it.id))) } }
                                 }
                             }
                             .padding(16).frame(maxWidth: .infinity, alignment: .leading).glassCard(24)
                         }
                     }
                     if store.wardrobe.contains(where: { !$0.clean }) {
-                        Button("Tout est lavé ✅") { for i in store.wardrobe.indices { store.wardrobe[i].clean = true } }
+                        Button("Tout est lavé ✅") {
+                            for var it in store.wardrobe where !it.clean { it.clean = true; store.engine.apply(.update(.clothing(it))) }
+                        }
                             .buttonStyle(GlassButtonStyle())
                     }
                 }
@@ -74,7 +76,10 @@ struct WardrobeView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .navigationTitle("Garde-robe")
-        .task { weather = await WeatherService.fetch() }
+        .task {
+            let p = store.profileOrDefault
+            weather = await WeatherService.fetch(lat: p.latitude, lon: p.longitude)
+        }
         .photoPicker(isPresented: $showPicker) { scanClothes($0) }
     }
 
@@ -90,7 +95,7 @@ struct WardrobeView: View {
                 for it in r.items where !it.name.isEmpty {
                     let cat = categories.contains(it.category) ? it.category : "Autre"
                     if !store.wardrobe.contains(where: { $0.name.lowercased() == it.name.lowercased() }) {
-                        store.wardrobe.append(ClothingItem(name: it.name, category: cat)); added += 1
+                        store.engine.apply(.add(.clothing(ClothingItem(name: it.name, category: cat)))); added += 1
                     }
                 }
                 scanMessage = added == 0 ? "Aucun nouvel habit détecté." : "\(added) habit(s) ajouté(s) ✅"
@@ -106,7 +111,7 @@ struct WardrobeView: View {
                 Image(systemName: weather?.icon ?? "cloud.fill").font(.largeTitle)
                 VStack(alignment: .leading) {
                     Text(weather.map { "\(Int($0.temp.rounded()))°C – \($0.summary)" } ?? "Météo indisponible").font(.headline)
-                    Text("Le Kef").font(.caption).foregroundStyle(.secondary)
+                    Text(store.profileOrDefault.cityLabel).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
@@ -118,7 +123,9 @@ struct WardrobeView: View {
     }
 
     private func toggle(_ it: ClothingItem) {
-        if let i = store.wardrobe.firstIndex(where: { $0.id == it.id }) { store.wardrobe[i].clean.toggle() }
+        var copy = it
+        copy.clean.toggle()
+        store.engine.apply(.update(.clothing(copy)))
     }
 
     private func suggest() {
@@ -129,7 +136,7 @@ struct WardrobeView: View {
         Task {
             do {
                 suggestion = try await gemini.text("""
-                Météo au Kef : \(w). Habits PROPRES disponibles : \(clean).
+                Météo à \(store.profileOrDefault.city) : \(w). Habits PROPRES disponibles : \(clean).
                 Propose UNE tenue complète pour aujourd'hui en utilisant uniquement ces habits, adaptée à un lycéen. 3 lignes max, avec une courte raison.
                 """, store: store)
             } catch { suggestion = error.localizedDescription }

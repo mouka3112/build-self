@@ -115,10 +115,10 @@ struct WrapUpView: View {
 
     private func save() {
         let file = photo.flatMap { PhotoStore.save($0) }
-        store.reviews.append(SessionReview(date: .now, kind: kind,
-                                           improved: aspects.filter { states[$0] == 1 },
-                                           worsened: aspects.filter { states[$0] == 2 },
-                                           note: note, photo: file))
+        store.engine.apply(.add(.review(SessionReview(date: .now, kind: kind,
+                                                       improved: aspects.filter { states[$0] == 1 },
+                                                       worsened: aspects.filter { states[$0] == 2 },
+                                                       note: note, photo: file))))
         Haptic.success(); dismiss()
     }
 }

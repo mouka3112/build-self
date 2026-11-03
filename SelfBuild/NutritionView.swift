@@ -33,7 +33,9 @@ struct NutritionView: View {
                         LazyVGrid(columns: cols, spacing: 12) {
                             ForEach(store.allFoodCards) { card in
                                 Button {
-                                    store.addFood(card, grams: card.portion); Haptic.tap()
+                                    store.addFood(card, grams: card.portion)
+                                    message = "+\(Int(card.portion)) g de \(card.name) (\(Int(card.kcal100 * card.portion / 100)) kcal, \(Int(card.protein100 * card.portion / 100)) g prot.)"
+                                    Haptic.tap()
                                 } label: {
                                     VStack(spacing: 6) {
                                         Text(card.emoji).font(.system(size: 40))
@@ -48,7 +50,7 @@ struct NutritionView: View {
                                         Button("+\(g) g") { store.addFood(card, grams: Double(g)) }
                                     }
                                     if card.id.hasPrefix("custom-") {
-                                        Button("Supprimer la carte", role: .destructive) { store.customFoods.removeAll { $0.id == card.id } }
+                                        Button("Supprimer la carte", role: .destructive) { store.engine.apply(.delete(.customFood(card.id))) }
                                     }
                                 }
                             }
@@ -73,7 +75,7 @@ struct NutritionView: View {
                                         }
                                         Spacer()
                                         Text("\(Int(f.kcal)) kcal · \(Int(f.protein)) g P").font(.caption.monospacedDigit())
-                                        Button { store.removeFood(f) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                                        Button { store.engine.apply(.delete(.food(f.id))) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary).frame(width: 32, height: 32) }
                                     }
                                 }
                             }
@@ -98,13 +100,11 @@ struct NutritionView: View {
                 Analyse cette photo de repas. Liste chaque aliment visible avec une estimation réaliste, TOTAUX pour la portion visible.
                 Réponds UNIQUEMENT en JSON : {"items":[{"name":"nom court en français","grams":nombre,"kcal":nombre,"protein":nombre}]}
                 """, image: image)
-                for i in r.items {
-                    store.foods.append(FoodEntry(date: .now, name: i.name, grams: i.grams, kcal: i.kcal, protein: i.protein))
-                    store.ensureCard(name: i.name, grams: i.grams, kcal: i.kcal, protein: i.protein)
-                }
-                let kcal = r.items.reduce(0) { $0 + $1.kcal }, prot = r.items.reduce(0) { $0 + $1.protein }
-                message = "Ajouté : " + r.items.map(\.name).joined(separator: ", ") + " (≈ \(Int(kcal)) kcal, \(Int(prot)) g de protéines). Estimation approximative."
-                Haptic.success()
+                let lines = r.items.filter { !$0.name.isEmpty && $0.grams > 0 }
+                    .map { MealLine(name: $0.name, grams: $0.grams, kcal: $0.kcal, protein: $0.protein) }
+                let res = store.engine.apply(.meal(items: lines))
+                message = res.summary + (res.status == .applied ? " — estimation approximative." : "")
+                if res.status == .applied { Haptic.success() } else { Haptic.warn() }
             } catch { message = error.localizedDescription }
             analyzing = false
         }

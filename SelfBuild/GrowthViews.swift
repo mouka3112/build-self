@@ -25,13 +25,13 @@ struct ProjectsView: View {
                         }.padding(12).glassCard(14)
                         Button {
                             guard !title.isEmpty else { return }
-                            store.projects.append(Project(title: title, goal: goal)); title = ""; goal = ""
+                            store.engine.apply(.add(.project(Project(title: title, goal: goal)))); title = ""; goal = ""
                         } label: { Label("Créer le projet", systemImage: "plus") }.buttonStyle(GlassButtonStyle(prominent: true))
                     }
                     .padding(16).glassCard(24)
                     if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.secondary) }
 
-                    ForEach($store.projects) { $p in
+                    ForEach(store.projects) { p in
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
                                 Text(p.title).font(.headline)
@@ -41,8 +41,8 @@ struct ProjectsView: View {
                                 }
                             }
                             if !p.goal.isEmpty { Text(p.goal).font(.caption).foregroundStyle(.secondary) }
-                            ForEach($p.steps) { $s in
-                                Button { s.done.toggle(); Haptic.tap() } label: {
+                            ForEach(p.steps) { s in
+                                Button { toggleStep(p, s); Haptic.tap() } label: {
                                     HStack(alignment: .top) {
                                         Image(systemName: s.done ? "checkmark.circle.fill" : "circle")
                                         Text(s.title).strikethrough(s.done).multilineTextAlignment(.leading)
@@ -55,7 +55,7 @@ struct ProjectsView: View {
                             }.buttonStyle(GlassButtonStyle()).disabled(busyID != nil)
                         }
                         .padding(16).glassCard(24)
-                        .contextMenu { Button("Supprimer", role: .destructive) { store.projects.removeAll { $0.id == p.id } } }
+                        .contextMenu { Button("Supprimer", role: .destructive) { store.engine.apply(.delete(.project(p.id))) } }
                     }
                 }
                 .padding()
@@ -65,16 +65,25 @@ struct ProjectsView: View {
         .navigationTitle("Projets")
     }
 
+    private func toggleStep(_ p: Project, _ s: RoadmapStep) {
+        guard var q = store.projects.first(where: { $0.id == p.id }), let i = q.steps.firstIndex(where: { $0.id == s.id }) else { return }
+        q.steps[i].done.toggle()
+        store.engine.apply(.update(.project(q)))
+    }
+
     private func roadmap(for p: Project) {
         busyID = p.id; error = ""
         Task {
             do {
                 let r = try await gemini.json(StepsResponse.self, """
-                Projet de Melik (15 ans, lycéen) : « \(p.title) ». Objectif : \(p.goal.isEmpty ? "non précisé" : p.goal).
+                Projet de \(store.aiPersona) : « \(p.title) ». Objectif : \(p.goal.isEmpty ? "non précisé" : p.goal).
                 Crée une roadmap réaliste de 6 à 10 étapes concrètes, ordonnées, réalisables avec un emploi du temps de lycéen.
                 JSON uniquement : {"steps": ["étape 1", "étape 2", …]}
                 """, store: store)
-                if let i = store.projects.firstIndex(where: { $0.id == p.id }) { store.projects[i].steps = r.steps.map { RoadmapStep(title: $0) } }
+                if var q = store.projects.first(where: { $0.id == p.id }) {
+                    q.steps = r.steps.map { RoadmapStep(title: $0) }
+                    store.engine.apply(.update(.project(q)))
+                }
             } catch { self.error = error.localizedDescription }
             busyID = nil
         }
@@ -133,7 +142,8 @@ struct ChallengesView: View {
     }
 
     private func toggle(_ c: Challenge) {
-        if let i = store.challenges.firstIndex(where: { $0.id == c.id }) { store.challenges[i].done.toggle(); Haptic.success() }
+        let r = store.engine.apply(c.done ? .reopenChallenge(id: c.id) : .completeChallenge(ref: c.id.uuidString))
+        if r.status == .applied { Haptic.success() }
     }
 
     private func generate() {
@@ -141,10 +151,10 @@ struct ChallengesView: View {
         Task {
             do {
                 let r = try await gemini.json(ChallengesResponse.self, """
-                Génère 3 micro-défis du jour (5 à 15 minutes chacun) pour Melik, pour gamifier ses habitudes : un physique, un mental/études, un hygiène ou discipline. Concrets, mesurables, sans matériel.
+                Génère 3 micro-défis du jour (5 à 15 minutes chacun) pour \(store.aiPersona), pour gamifier ses habitudes : un physique, un mental/études, un hygiène ou discipline. Concrets, mesurables, sans matériel.
                 JSON uniquement : {"challenges": ["défi 1", "défi 2", "défi 3"]}
                 """, store: store)
-                store.challenges.append(contentsOf: r.challenges.prefix(3).map { Challenge(date: .now, text: $0) })
+                for text in r.challenges.prefix(3) { store.engine.apply(.add(.challenge(Challenge(date: .now, text: text)))) }
             } catch { self.error = error.localizedDescription }
             busy = false
         }
@@ -201,8 +211,7 @@ struct CapsuleView: View {
 
     private func seal() {
         let cap = TimeCapsule(created: .now, unlock: unlock, text: text, photo: photo.flatMap { PhotoStore.save($0) })
-        store.capsules.append(cap)
-        NotificationManager.shared.schedule(id: "capsule-\(cap.id)", title: "⏳ Ta capsule temporelle s'ouvre", body: "Un message de ton passé t'attend.", date: unlock)
-        text = ""; photo = nil; Haptic.success()
+        let r = store.engine.apply(.add(.capsule(cap)))          // notification programmée par le moteur
+        if r.status == .applied { text = ""; photo = nil; Haptic.success() } else { Haptic.warn() }
     }
 }

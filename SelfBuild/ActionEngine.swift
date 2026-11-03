@@ -25,6 +25,14 @@ enum AppAction: Codable, Hashable {
     case completeChallenge(ref: String)
     case undoLast
     case navigate(to: AppDestination)
+    // Lot 2 : actions génériques des modules (ajout / modification / suppression annulables)
+    case add(Record)
+    case update(Record)
+    case delete(RecordRef)
+    case reopenHomework(id: UUID)
+    case reopenChallenge(id: UUID)
+    case finishWorkout
+    case setLockdown(minutes: Int?)
 
     /// Empreinte stable : sert à l'anti-doublon.
     var fingerprint: String { String(describing: self) }
@@ -32,7 +40,20 @@ enum AppAction: Codable, Hashable {
     /// Actions qui AJOUTENT une donnée (un doublon = une vraie erreur). Les autres sont idempotentes par nature.
     var isAdditive: Bool {
         switch self {
-        case .expense, .income, .meal, .water, .workoutSet, .health, .note, .reminder, .exam, .homework, .addTask, .switchActivity:
+        case .expense, .income, .meal, .water, .workoutSet, .health, .note, .reminder, .exam, .homework, .addTask, .switchActivity, .add:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Petites modifications d'UI (cocher un habit, une étape…) : passent par le moteur mais ne remplissent pas le Journal.
+    var isQuiet: Bool {
+        switch self {
+        case .update(let r):
+            if case .challenge = r { return false }
+            return true
+        case .setLockdown:
             return true
         default:
             return false
@@ -77,6 +98,8 @@ enum UndoOp: Codable, Hashable {
     case setTutorSessionsPaid([UUID], Bool)
     case setChallengeDone(UUID, Bool)
     case setWorkoutCursor(Int)
+    case remove(RecordRef)
+    case upsert(Record)
 }
 
 struct ActionResult: Hashable {
@@ -139,6 +162,7 @@ final class ActionEngine {
     func apply(_ action: AppAction, source: ActionSource) -> ActionResult {
         let r = run(action)
         if case .navigate = action { return r }
+        if action.isQuiet && r.status == .applied { return r }
         record(JournalEntry(source: source, items: [makeItem(action, r)]))
         return r
     }
@@ -261,7 +285,11 @@ final class ActionEngine {
         case .homework(let subject, let title, let due):
             if subject.trimmingCharacters(in: .whitespaces).isEmpty || title.trimmingCharacters(in: .whitespaces).isEmpty { return "devoir incomplet" }
             if due < startOfToday { return "la date de rendu est passée" }
-        case .undoLast, .navigate:
+        case .setLockdown(let minutes):
+            if let m = minutes, !(5...480).contains(m) { return "durée de Lockdown invalide" }
+        case .add(let r), .update(let r):
+            if let why = validateRecord(r) { return why }
+        case .undoLast, .navigate, .delete, .reopenHomework, .reopenChallenge, .finishWorkout:
             break
         }
         return nil
@@ -413,7 +441,8 @@ final class ActionEngine {
 
         case .completeHomework(let ref):
             let r = Planner.normalize(ref)
-            guard let i = store.homework.firstIndex(where: { !$0.done && (r.contains(Planner.normalize($0.subject)) || Planner.normalize($0.title).contains(r) || Planner.normalize($0.subject).contains(r)) }) else {
+            let byID = UUID(uuidString: ref).flatMap { u in store.homework.firstIndex { $0.id == u && !$0.done } }
+            guard let i = byID ?? store.homework.firstIndex(where: { !$0.done && (r.contains(Planner.normalize($0.subject)) || Planner.normalize($0.title).contains(r) || Planner.normalize($0.subject).contains(r)) }) else {
                 return .rejected("Aucun devoir en attente ne correspond à « \(ref) ».")
             }
             store.homework[i].done = true
@@ -468,6 +497,118 @@ final class ActionEngine {
 
         case .navigate(let dest):
             return ActionResult(status: .applied, summary: "Ouverture : \(dest.title)", destination: dest)
+
+        case .add(let r):
+            if store.record(r.ref) != nil { return ActionResult(status: .duplicate, summary: "Déjà enregistré : \(r.label)", destination: r.destination) }
+            store.upsert(r)
+            afterUpsert(r)
+            var undo: [UndoOp] = [.remove(r.ref)]
+            var extra = ""
+            if case .tutor(let t) = r, t.weekday == cal.component(.weekday, from: .now) {
+                let before = timings()
+                let task = TaskItem(title: "Cours particulier : \(t.subject) (\(t.name))", icon: "person.2.fill",
+                                    start: t.hour * 60 + t.minute, duration: 60, kind: .tutor, linkID: t.id)
+                store.tasks.append(task)
+                let dropped = reflow()
+                undo += [UndoOp.removeTask(task.id), UndoOp.restoreTimings(before)] + reinsert(dropped)
+                extra = " · ajouté au planning d'aujourd'hui"
+            }
+            return ActionResult(status: .applied, summary: "Ajouté : \(r.label)\(extra)", destination: r.destination, undo: undo)
+
+        case .update(let r):
+            guard let old = store.record(r.ref) else { return .rejected("Élément introuvable : \(r.label)") }
+            if old == r { return ActionResult(status: .duplicate, summary: "Aucun changement", destination: r.destination) }
+            store.upsert(r)
+            afterUpsert(r)
+            return ActionResult(status: .applied, summary: "Modifié : \(r.label)", destination: r.destination, undo: [.upsert(old)])
+
+        case .delete(let ref):
+            guard let old = store.removeRecord(ref) else { return .rejected("Élément déjà supprimé.") }
+            afterRemove(old)
+            return ActionResult(status: .applied, summary: "Supprimé : \(old.label)", destination: ref.destination, undo: [.upsert(old)])
+
+        case .reopenHomework(let id):
+            guard let i = store.homework.firstIndex(where: { $0.id == id }), store.homework[i].done else {
+                return ActionResult(status: .duplicate, summary: "Devoir déjà à faire", destination: .study)
+            }
+            store.homework[i].done = false
+            return ActionResult(status: .applied, summary: "Devoir à refaire : \(store.homework[i].subject) – \(store.homework[i].title)",
+                                destination: .study, undo: [.setHomeworkDone(id, true)])
+
+        case .reopenChallenge(let id):
+            guard let i = store.challenges.firstIndex(where: { $0.id == id }), store.challenges[i].done else {
+                return ActionResult(status: .duplicate, summary: "Défi déjà à faire", destination: .challenges)
+            }
+            store.challenges[i].done = false
+            return ActionResult(status: .applied, summary: "Défi décoché : \(store.challenges[i].text)", destination: .challenges,
+                                undo: [.setChallengeDone(id, true)])
+
+        case .finishWorkout:
+            if let t = store.tasks.first(where: { $0.kind == .workout && !$0.done }) { return completeTask(t.id.uuidString) }
+            let old = store.workoutCursor
+            store.workoutCursor = (old + 1) % Program.days.count
+            return ActionResult(status: .applied, summary: "Séance \(Program.days[old].code) terminée · prochaine : \(Program.days[store.workoutCursor].code) \(Program.days[store.workoutCursor].name)",
+                                destination: .muscu, undo: [.setWorkoutCursor(old)])
+
+        case .setLockdown(let minutes):
+            if let m = minutes {
+                store.lockdownEnd = Date().addingTimeInterval(Double(m) * 60)
+                store.lockdownActive = true
+                return ActionResult(status: .applied, summary: "Lockdown activé pour \(m) min", destination: .study)
+            }
+            store.lockdownActive = false
+            store.lockdownEnd = nil
+            return ActionResult(status: .applied, summary: "Lockdown terminé", destination: .study)
+        }
+    }
+
+    // MARK: Données génériques (Lot 2)
+    private func validateRecord(_ r: Record) -> String? {
+        switch r {
+        case .txn(let x): return x.amount == 0 || abs(x.amount) > 100_000 ? "montant invalide" : nil
+        case .food(let x): return x.grams <= 0 ? "quantité invalide" : nil
+        case .homework(let x): return x.subject.isEmpty ? "matière vide" : nil
+        case .exam(let x): return x.subject.isEmpty ? "matière vide" : nil
+        case .reminder(let x): return x.title.trimmingCharacters(in: .whitespaces).isEmpty ? "titre vide" : nil
+        case .tutor(let x):
+            if x.name.trimmingCharacters(in: .whitespaces).isEmpty { return "nom du prof vide" }
+            if !(1...7).contains(x.weekday) || !(0...23).contains(x.hour) || !(0...59).contains(x.minute) { return "horaire invalide" }
+            return x.price < 0 || x.price > 10_000 ? "prix invalide" : nil
+        case .timetable(let x): return x.end <= x.start || !(1...7).contains(x.weekday) ? "horaire de cours invalide" : nil
+        case .note(let x): return x.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "note vide" : nil
+        case .health(let x): return x.text.isEmpty ? "texte vide" : nil
+        case .project(let x): return x.title.trimmingCharacters(in: .whitespaces).isEmpty ? "nom du projet vide" : nil
+        case .clothing(let x): return x.name.trimmingCharacters(in: .whitespaces).isEmpty ? "nom de l'habit vide" : nil
+        case .challenge(let x): return x.text.isEmpty ? "défi vide" : nil
+        case .capsule(let x): return x.unlock <= Date() ? "la date d'ouverture doit être dans le futur" : nil
+        case .runRecord(let x): return x.distance < 0 ? "distance invalide" : nil
+        case .lesson, .customFood, .workoutSet, .review, .dish, .tutorSession: return nil
+        }
+    }
+
+    /// Effets de bord d'un ajout / d'une modification (notifications…).
+    private func afterUpsert(_ r: Record) {
+        switch r {
+        case .reminder(let x):
+            NotificationManager.shared.cancelReminder(x.id)
+            NotificationManager.shared.scheduleReminder(x, name: store.displayName)
+        case .tutor(let x):
+            NotificationManager.shared.cancelTutor(x)
+            NotificationManager.shared.scheduleTutor(x)
+        case .capsule(let x):
+            NotificationManager.shared.schedule(id: "capsule-\(x.id)", title: "⏳ Ta capsule temporelle s'ouvre",
+                                                body: "Un message de ton passé t'attend.", date: x.unlock)
+        default:
+            break
+        }
+    }
+
+    private func afterRemove(_ r: Record) {
+        switch r {
+        case .reminder(let x): NotificationManager.shared.cancelReminder(x.id)
+        case .tutor(let x): NotificationManager.shared.cancelTutor(x)
+        case .capsule(let x): NotificationManager.shared.cancel(id: "capsule-\(x.id)")
+        default: break
         }
     }
 
@@ -643,6 +784,11 @@ final class ActionEngine {
             case .setChallengeDone(let id, let value):
                 if let i = store.challenges.firstIndex(where: { $0.id == id }) { store.challenges[i].done = value }
             case .setWorkoutCursor(let v): store.workoutCursor = v
+            case .remove(let ref):
+                if let old = store.removeRecord(ref) { afterRemove(old) }
+            case .upsert(let r):
+                store.upsert(r)
+                afterUpsert(r)
             }
         }
         store.tasks.sort { $0.start < $1.start }
@@ -688,6 +834,11 @@ final class ActionEngine {
         case .completeChallenge: return .challenges
         case .undoLast: return nil
         case .navigate(let d): return d
+        case .add(let r), .update(let r): return r.destination
+        case .delete(let ref): return ref.destination
+        case .reopenHomework, .setLockdown: return .study
+        case .reopenChallenge: return .challenges
+        case .finishWorkout: return .muscu
         }
     }
 
@@ -750,6 +901,7 @@ final class ActionEngine {
     }
 
     private func matchTutor(_ ref: String) -> Tutor? {
+        if let u = UUID(uuidString: ref) { return store.tutors.first { $0.id == u } }
         let r = Planner.normalize(ref)
         if !r.isEmpty, let t = store.tutors.first(where: {
             let name = Planner.normalize($0.name), subject = Planner.normalize($0.subject)
@@ -760,6 +912,7 @@ final class ActionEngine {
 
     private func matchChallenge(_ ref: String) -> Challenge? {
         let r = Planner.normalize(ref)
+        if let u = UUID(uuidString: ref) { return store.challenges.first { $0.id == u && !$0.done } }
         let open = store.challengesToday.filter { !$0.done }
         if let c = open.first(where: { Planner.normalize($0.text).contains(r) || r.contains(Planner.normalize($0.text)) }) { return c }
         for c in open {

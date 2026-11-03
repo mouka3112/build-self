@@ -89,7 +89,30 @@ Le schéma exact envoyé à l'API est généré par `NexusTools.declarations()` 
 | « rappelle-moi tous les lundis à 18 h » | create_reminder(weekly) → `.reminder` | visible dans Rappels + notification `rem-<id>` hebdo |
 | Erreur 503 | `GeminiClient` → modèle suivant, 2 passes, pause 2 s | message clair listant les modèles essayés si tout échoue, jamais de bulle vide |
 
-## 5. Ce qui reste (lots suivants)
+## 5. Lot 2 — modules branchés sur le moteur
 
-- **Lot 2** : modules (Finances, Études/Lockdown, Santé, Rappels, Cours particuliers, Muscu, Nutrition, Garde-robe, Cuisine, Running, Musique, Projets/Défis/Capsule, Bilans, Safe Space, Réglages) réécrits pour passer **tous** par `ActionEngine` (aujourd'hui certains écrans v2 écrivent encore directement dans `AppStore` : ça fonctionne mais sans Journal ni effets croisés).
+Toutes les écritures des écrans passent par `ActionEngine` :
+
+| Écran | Actions utilisées |
+|---|---|
+| Finances | `.expense`, `.income`, scan ticket → `.expense`, suppression → `.delete(.txn)` |
+| Études / Lockdown | `.homework`, `.completeHomework` / `.reopenHomework`, `.setLockdown`, validation photo → `.completeHomework` |
+| Emploi du temps / contrôles | `.add(.timetable)`, `.exam`, `.delete(…)` |
+| Cours particuliers | `.add(.tutor)` (rappels + tâche du jour), `.tutorSession`, `.tutorPaid` (Khallast), `.delete(.tutor)` |
+| Cours en photos | `.add(.lesson)` (+ coche la tâche « Photos des cours »), résumé IA → `.update(.lesson)` |
+| Rappels | `.reminder`, `.delete(.reminder)` (notification annulée) |
+| Muscu | `.workoutSet`, `.finishWorkout`, `.delete(.workoutSet)`, bilan → `.add(.review)` |
+| Nutrition | cartes / Autre / photo → `.meal`, suppression → `.delete(.food)` / `.delete(.customFood)` |
+| Hygiène / Santé | `.hygiene`, `.water`, `.health`, `.delete(.health)` |
+| Garde-robe, Cuisine, Running | `.add` / `.update` / `.delete` (`clothing`, `dish`, `runRecord`) |
+| Projets, Défis, Capsule | `.add(.project)`, `.update(.project)`, `.add(.challenge)`, `.completeChallenge` / `.reopenChallenge`, `.add(.capsule)` (notification) |
+
+Actions génériques : `.add(Record)`, `.update(Record)`, `.delete(RecordRef)` — chacune annulable (`UndoOp.remove` / `.upsert`).
+Les petites modifications (cocher un habit, une étape de projet, résumé d'un cours, Lockdown) sont « discrètes » : elles passent par le moteur mais ne remplissent pas le Journal.
+
+Restent liés directement à `AppStore` (réglages, pas des données métier) : objectifs kcal/protéines, stock de cuisine, profil de goûts.
+Les invites IA n'utilisent plus de prénom/âge/monnaie en dur : tout vient du profil (`store.aiPersona`, `store.currency`).
+
+## 6. Ce qui reste
+
 - **Lot 3** : extension Live Activity (poses), `project.yml`, `build.yml`, guide d'installation, checklist de tests sur iPhone.

@@ -44,9 +44,8 @@ struct WorkoutView: View {
     }
 
     private func finishSession() {
-        if let t = store.tasks.first(where: { $0.kind == .workout && !$0.done }) { store.complete(t) }
-        else { store.workoutCursor = (store.workoutCursor + 1) % Program.days.count }
-        dayIndex = store.workoutCursor
+        store.engine.apply(.finishWorkout)          // tâche du Hub cochée + séance suivante, via le moteur
+        dayIndex = store.workoutCursor % Program.days.count
         LiveActivityManager.shared.end()
         rest.stop()
         Haptic.success()
@@ -97,8 +96,10 @@ struct ExerciseCard: View {
                 HStack {
                     Text("Série \(i + 1)").foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(fmtKg(s.weight)) kg × \(s.reps)").monospacedDigit()
-                }.font(.subheadline)
+                    Text("\(fmtKg(s.weight)) kg × \(s.reps)" + (s.effort.map { [" ", " 😌", " 😅", " 🥵"][min(3, max(0, $0))] } ?? "")).monospacedDigit()
+                }
+                .font(.subheadline)
+                .contextMenu { Button("Supprimer la série", role: .destructive) { store.engine.apply(.delete(.workoutSet(s.id))) } }
             }
             if !aiNote.isEmpty { Label(aiNote, systemImage: "sparkles").font(.footnote).padding(10).glassCard(14) }
             HStack(spacing: 8) {
@@ -136,7 +137,8 @@ struct ExerciseCard: View {
 
     private func validate() {
         guard let w = Double(weight.replacingOccurrences(of: ",", with: ".")), let r = Int(reps), r > 0 else { Haptic.warn(); return }
-        store.sets.append(SetRecord(date: .now, exercise: ex.name, weight: w, reps: r, effort: effort))
+        let res = store.engine.apply(.workoutSet(exercise: ex.name, weight: w, reps: r, effort: effort))
+        guard res.status == .applied else { aiNote = res.summary; Haptic.warn(); return }
         reps = ""
         rest.start(90)
         Haptic.success()
@@ -153,7 +155,7 @@ struct ExerciseCard: View {
         Task {
             do {
                 let r = try await gemini.json(AdaptResult.self, """
-                Exercice : \(ex.name). Objectif : \(ex.sets) séries de \(ex.repLabel) répétitions (hypertrophie), débutant de 15 ans, 1m83.
+                Exercice : \(ex.name). Objectif : \(ex.sets) séries de \(ex.repLabel) répétitions (hypertrophie), débutant : \(store.aiPersona).
                 Séries déjà faites aujourd'hui : \(today). Historique récent : \(hist.isEmpty ? "aucun (première fois)" : hist).
                 Effort : 1 = facile, 2 = correct, 3 = très dur. Règles : progression prudente (+2,5 kg max par séance), si l'effort est 3 deux fois de suite ou si les reps tombent sous le bas de la fourchette, garde ou baisse la charge, technique d'abord.
                 Propose la charge et les répétitions pour la PROCHAINE série. JSON uniquement : {"weight": kg en nombre, "reps": répétitions visées, "why": "une phrase courte"}
@@ -170,7 +172,7 @@ struct ExerciseCard: View {
         Task {
             do {
                 tips = try await gemini.text("""
-                Explique l'exercice « \(ex.name) » à un débutant de 15 ans : muscles travaillés, 4 étapes d'exécution, 3 erreurs fréquentes, respiration, et une charge de départ prudente. Maximum 130 mots, listes courtes, français.
+                Explique l'exercice « \(ex.name) » à un débutant (\(store.aiPersona)) : muscles travaillés, 4 étapes d'exécution, 3 erreurs fréquentes, respiration, et une charge de départ prudente. Maximum 130 mots, listes courtes, français.
                 """, store: nil)
             } catch { tips = error.localizedDescription }
             loadingTips = false

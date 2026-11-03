@@ -83,12 +83,25 @@ final class AppStore: ObservableObject {
     var displayName: String { firstName.isEmpty ? "toi" : firstName }
     var currency: String { profile?.currency ?? "TND" }
     var planLimit: Int { Planner.limit(bed: profileOrDefault.bedMinute) }
+    /// Matières de l'élève (profil), sinon la liste standard.
+    var subjectList: [String] {
+        let s = profileOrDefault.subjects
+        return s.isEmpty ? schoolSubjects : s
+    }
+    /// Phrase courte décrivant l'utilisateur pour les prompts IA (jamais de données en dur).
+    var aiPersona: String {
+        let p = profileOrDefault
+        return "\(displayName) (\(p.age) ans, \(Int(p.heightCm)) cm, \(fmtKg(p.weightKg)) kg\(p.isStudent ? ", élève" : ""))"
+    }
 
     func completeOnboarding(_ p: UserProfile, kcal: Double, protein: Double) {
+        let firstTime = profile == nil
         profile = p
         calorieGoal = kcal
         proteinGoal = protein
-        resetToday()
+        // Premier lancement : planning généré avec le vrai rythme. Modification depuis Réglages :
+        // on garde ce qui est déjà coché (bouton « Régénérer le planning » disponible).
+        if firstTime { resetToday() }
         save()
     }
 
