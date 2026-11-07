@@ -40,6 +40,25 @@ struct NexusFace: View {
     }
 }
 
+/// Gros compte à rebours (ou ✅ quand c'est terminé).
+private struct Countdown: View {
+    let state: SelfBuildAttributes.ContentState
+    let fontSize: CGFloat
+    let width: CGFloat
+
+    var body: some View {
+        if state.finished == true {
+            Image(systemName: "checkmark.circle.fill").font(.system(size: fontSize, weight: .bold)).foregroundStyle(.white)
+                .frame(width: width)
+        } else {
+            Text(timerInterval: Date.now...max(state.endDate, Date.now.addingTimeInterval(1)), countsDown: true)
+                .font(.system(size: fontSize, weight: .bold, design: .rounded).monospacedDigit())
+                .multilineTextAlignment(.trailing)
+                .frame(width: width)
+        }
+    }
+}
+
 struct SelfBuildLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: SelfBuildAttributes.self) { context in
@@ -51,33 +70,33 @@ struct SelfBuildLiveActivity: Widget {
                     Text(context.state.subtitle).font(.caption).foregroundStyle(.white.opacity(0.65)).lineLimit(1)
                 }
                 Spacer(minLength: 4)
-                Text(timerInterval: range(context.state.endDate), countsDown: true)
-                    .font(.system(size: 30, weight: .bold, design: .rounded).monospacedDigit())
-                    .multilineTextAlignment(.trailing).frame(width: 96)
+                Countdown(state: context.state, fontSize: 30, width: 96)
             }
             .padding(16)
             .foregroundStyle(.white)
             .activityBackgroundTint(Color(red: 0.05, green: 0.05, blue: 0.09))
+            .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) { NexusFace(pose: context.state.pose, size: 46).padding(.leading, 4) }
-                DynamicIslandExpandedRegion(.trailing) {
-                    Text(timerInterval: range(context.state.endDate), countsDown: true)
-                        .font(.system(size: 24, weight: .bold, design: .rounded).monospacedDigit()).frame(width: 84)
-                }
+                DynamicIslandExpandedRegion(.trailing) { Countdown(state: context.state, fontSize: 24, width: 84) }
                 DynamicIslandExpandedRegion(.center) { Text(context.state.title).font(.headline).lineLimit(1) }
-                DynamicIslandExpandedRegion(.bottom) { Text(context.state.subtitle).font(.caption).foregroundStyle(.secondary) }
+                DynamicIslandExpandedRegion(.bottom) { Text(context.state.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             } compactLeading: {
                 NexusFace(pose: context.state.pose, size: 22)
             } compactTrailing: {
-                Text(timerInterval: range(context.state.endDate), countsDown: true).monospacedDigit().frame(width: 46)
+                if context.state.finished == true {
+                    Image(systemName: "checkmark").foregroundStyle(.white)
+                } else {
+                    Text(timerInterval: Date.now...max(context.state.endDate, Date.now.addingTimeInterval(1)), countsDown: true)
+                        .monospacedDigit().frame(width: 46)
+                }
             } minimal: {
                 NexusFace(pose: context.state.pose, size: 22)
             }
+            .keylineTint(.white)
         }
     }
-
-    private func range(_ end: Date) -> ClosedRange<Date> { Date.now...max(end, Date.now.addingTimeInterval(1)) }
 }
 
 @main

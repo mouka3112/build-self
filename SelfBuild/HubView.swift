@@ -170,7 +170,7 @@ private struct TaskNowCard: View {
 
     private func finish() {
         let r = store.engine.apply(.completeTask(ref: task.id.uuidString))
-        LiveActivityManager.shared.end()
+        if LiveActivityManager.shared.isActive { LiveActivityManager.shared.end(message: "\(task.title) ✅") }
         guard r.status == .applied else { Haptic.warn(); return }
         Haptic.success()
         if task.kind == .workout { router.wrapUp = WrapUpRequest(kind: "workout") }

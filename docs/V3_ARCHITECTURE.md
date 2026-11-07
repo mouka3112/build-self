@@ -113,6 +113,10 @@ Les petites modifications (cocher un habit, une étape de projet, résumé d'un 
 Restent liés directement à `AppStore` (réglages, pas des données métier) : objectifs kcal/protéines, stock de cuisine, profil de goûts.
 Les invites IA n'utilisent plus de prénom/âge/monnaie en dur : tout vient du profil (`store.aiPersona`, `store.currency`).
 
-## 6. Ce qui reste
+## 6. Lot 3 — Live Activity, build, installation
 
-- **Lot 3** : extension Live Activity (poses), `project.yml`, `build.yml`, guide d'installation, checklist de tests sur iPhone.
+- `SelfBuildAttributes` (partagé app + extension) : `ContentState.pose` (idle, wave, lookL, lookR, blink, happy) + `finished` (optionnel, écran « Terminé ✅ »).
+- `LiveActivityManager` : pose « coucou » au départ puis cycle toutes les ~8 s, minuteur de repos de muscu affiché dans la Dynamic Island puis retour à la séance, fin avec Nexus content (8 s), diagnostic (autorisations, `.appex`, erreur de `Activity.request`).
+- `build.yml` : builds sur `main` et `v3`, un build à la fois par branche, échec si `SelfBuildWidget.appex` manque, Release taguée sur le commit compilé (`--target`), « Pre-release » hors `main`.
+- `project.yml` : version 3.0, permissions détaillées, `ITSAppUsesNonExemptEncryption = false`.
+- Guide : `GUIDE_SANS_MAC.md`. Tests sur iPhone : `docs/CHECKLIST_TESTS.md`.

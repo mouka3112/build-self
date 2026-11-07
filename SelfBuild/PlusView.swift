@@ -221,7 +221,7 @@ struct LockdownView: View {
 
     private func unlock(emergency: Bool) {
         store.engine.apply(.setLockdown(minutes: nil))
-        LiveActivityManager.shared.end()
+        LiveActivityManager.shared.end(message: emergency ? nil : "Lockdown réussi")
         MusicManager.shared.stopNoise()
         if !emergency {
             Task {

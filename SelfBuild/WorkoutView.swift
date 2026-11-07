@@ -46,7 +46,7 @@ struct WorkoutView: View {
     private func finishSession() {
         store.engine.apply(.finishWorkout)          // tâche du Hub cochée + séance suivante, via le moteur
         dayIndex = store.workoutCursor % Program.days.count
-        LiveActivityManager.shared.end()
+        LiveActivityManager.shared.end(message: "Séance terminée")
         rest.stop()
         Haptic.success()
         router.wrapUp = WrapUpRequest(kind: "workout")

@@ -46,7 +46,7 @@ final class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
-        LiveActivityManager.shared.start(mode: "workout", title: "Course en cours", subtitle: "Coach Nexus actif", minutes: 90)
+        LiveActivityManager.shared.start(mode: "run", title: "Course en cours", subtitle: "Coach Nexus actif", minutes: 90)
         coach("La course vient de démarrer : présente l'échauffement et choisis une première musique adaptée.")
     }
 
@@ -63,7 +63,7 @@ final class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
                 .map { Coord(lat: $0.element.latitude, lon: $0.element.longitude) }
             store.engine.apply(.add(.runRecord(RunRecord(date: .now, distance: distance, duration: elapsed, route: pts))))
         }
-        LiveActivityManager.shared.end()
+        LiveActivityManager.shared.end(message: String(format: "Course terminée · %.2f km", distance / 1000))
         MusicManager.shared.duck(false)
         MusicManager.shared.runMode = false
         say("Bravo \(store?.firstName ?? ""), course terminée ! Étire-toi et bois de l'eau.")

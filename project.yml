@@ -6,11 +6,13 @@ options:
     iOS: "17.0"
 settings:
   base:
+    # Réglages de compilation obligatoires (voir docs/V3_ARCHITECTURE.md)
     SWIFT_VERSION: "5.0"
     SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
     SWIFT_APPROACHABLE_CONCURRENCY: NO
-    MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    MARKETING_VERSION: "3.0"
+    CURRENT_PROJECT_VERSION: "3"
 targets:
   SelfBuild:
     type: application
@@ -26,16 +28,17 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
         NSSupportsLiveActivities: true
         UIBackgroundModes:
           - audio
           - location
-        NSLocationWhenInUseUsageDescription: Suivre ta course (distance et tracé)
+        NSLocationWhenInUseUsageDescription: Suivre ta course (distance, allure et tracé sur la carte)
         NSFaceIDUsageDescription: Verrouiller ton Safe Space et tes photos de progression
-        NSCameraUsageDescription: Prendre en photo tes devoirs et tes tickets de caisse
-        NSPhotoLibraryUsageDescription: Choisir une photo de devoirs ou de ticket
-        NSMicrophoneUsageDescription: Dictée vocale
-        NSSpeechRecognitionUsageDescription: Transcrire ta voix en texte
+        NSCameraUsageDescription: Photographier tes devoirs, tes cours, tes repas, tes habits et tes tickets de caisse
+        NSPhotoLibraryUsageDescription: Choisir une photo de devoirs, de cours, de repas ou de ticket
+        NSMicrophoneUsageDescription: Dictée vocale pour parler à Nexus et écrire tes notes
+        NSSpeechRecognitionUsageDescription: Transcrire ta voix en texte (français)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.melik.selfbuild
@@ -46,7 +49,7 @@ targets:
     platform: iOS
     sources:
       - path: SelfBuildWidget
-      - path: SelfBuild/SelfBuildAttributes.swift
+      - path: SelfBuild/SelfBuildAttributes.swift   # partagé entre l'app et l'extension
     info:
       path: Config/Widget-Info.plist
       properties:

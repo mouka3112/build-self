@@ -10,6 +10,7 @@ final class RestTimer: ObservableObject {
         task?.cancel()
         remaining = seconds
         NotificationManager.shared.schedule(id: "rest", title: "Repos terminé 💪", body: "Prochaine série.", in: TimeInterval(seconds))
+        LiveActivityManager.shared.showRest(seconds: seconds)      // compte à rebours du repos dans la Dynamic Island
         task = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))

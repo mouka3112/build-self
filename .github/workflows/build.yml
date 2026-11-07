@@ -2,11 +2,16 @@ name: Build IPA
 
 on:
   push:
-    branches: [main]
+    branches: [main, v3]
   workflow_dispatch:
 
 permissions:
   contents: write
+
+# Un seul build à la fois par branche : un nouveau push annule le build en cours.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -50,8 +55,15 @@ jobs:
           path: build.log
 
       - name: Vérifier que l'extension Dynamic Island est dans l'app
+        shell: bash
         run: |
-          ls -R build/Build/Products/Release-iphoneos/SelfBuild.app/PlugIns || (echo "EXTENSION ABSENTE" && exit 1)
+          APPEX="build/Build/Products/Release-iphoneos/SelfBuild.app/PlugIns/SelfBuildWidget.appex"
+          if [ ! -d "$APPEX" ]; then
+            echo "::error::EXTENSION ABSENTE : $APPEX introuvable (la Live Activity ne marcherait pas)"
+            ls -R build/Build/Products/Release-iphoneos/SelfBuild.app/PlugIns || true
+            exit 1
+          fi
+          echo "Extension présente : $APPEX"
 
       - name: Fabriquer le .ipa
         run: |
@@ -61,9 +73,17 @@ jobs:
           ls -lh SelfBuild.ipa
 
       - name: Publier l'IPA dans les Releases
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          SHORT="${GITHUB_SHA::7}"
+          MSG="$(git log -1 --pretty=%s)"
+          EXTRA=""
+          if [ "$BRANCH" != "main" ]; then EXTRA="--prerelease"; fi
+          # --target : le tag pointe sur le commit réellement compilé (et pas sur main par défaut).
           gh release create "build-${{ github.run_number }}" SelfBuild.ipa \
-            --title "Build ${{ github.run_number }}" \
-            --notes "IPA non signé : à installer avec SideStore."
+            --target "$GITHUB_SHA" $EXTRA \
+            --title "Build ${{ github.run_number }} · $BRANCH · $SHORT" \
+            --notes "IPA non signé (branche $BRANCH, commit $SHORT) : $MSG. À installer avec SideStore (voir GUIDE_SANS_MAC.md)."

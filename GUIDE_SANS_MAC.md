@@ -1,96 +1,86 @@
-# SELF BUILD sans Mac : GitHub compile, SideStore installe
+# SELF BUILD v3 sans Mac : GitHub compile, iloader / SideStore installe
 
-Principe : tu envoies le code sur GitHub → un Mac dans le cloud (gratuit) compile l'app et fabrique un fichier `.ipa` → tu le télécharges sur ton iPhone → SideStore le signe avec ton Apple ID et l'installe. Aucun Mac, aucun TeamViewer.
+Principe : le code est sur GitHub → un Mac dans le cloud (GitHub Actions, runner `macos-26`) compile l'app sans signature et publie un `.ipa` dans **Releases** → tu le télécharges → SideStore le signe avec ton Apple ID gratuit et l'installe.
 
-⚠️ Une seule chose exige un ordinateur : l'installation INITIALE de SideStore (10 minutes, USB). Un PC Windows, Linux ou Mac, même emprunté, suffit. Après, plus jamais besoin.
-Alternative si tu n'as vraiment aucun ordinateur : il n'existe pas de méthode propre et gratuite. Demande à un ami/au lycée/à un cyber de te prêter un PC 10 minutes.
+Un ordinateur (Windows suffit) n'est nécessaire qu'une seule fois : pour installer SideStore avec **iloader**.
 
 ---------------------------------------------------------------
-## ÉTAPE 1 – Les comptes (5 min, depuis ton téléphone)
-1. **GitHub** : va sur github.com → Sign up (gratuit). Note ton nom d'utilisateur.
-2. **Apple ID** : utilise de préférence un Apple ID secondaire créé juste pour ça (SideStore s'y connecte). Active si besoin la double authentification.
-3. **Clé Gemini** : aistudio.google.com/apikey → Create API key → copie-la (tu la colleras dans l'app).
+## 1. Ce qu'il te faut
+- Un compte **GitHub** (le dépôt `build-self` existe déjà sur ton compte `mouka3112`).
+- Un **Apple ID** (de préférence secondaire) pour SideStore.
+- Une **clé Gemini gratuite** : https://aistudio.google.com/apikey → *Create API key* (l'app te guide aussi au premier lancement).
+- Un iPhone sous **iOS 17 ou plus récent**.
 
-## ÉTAPE 2 – Créer le dépôt GitHub
-1. GitHub → bouton **+** (en haut à droite) → **New repository**.
-2. Nom : `selfbuild`. Choisis **Public** (builds macOS illimités et gratuits ; le code ne contient aucun secret car la clé Gemini se saisit dans l'app). En **Private**, les minutes macOS sont comptées beaucoup plus cher sur le plan gratuit (vérifie le quota dans Settings → Billing).
-3. Coche **Add a README file** → Create repository.
+## 2. Compiler l'app sur GitHub
+1. Le build démarre **tout seul** à chaque push sur les branches `main` et `v3`.
+2. Pour le relancer à la main : dépôt → onglet **Actions** → **Build IPA** → **Run workflow** → choisis la branche (`v3` tant qu'elle n'est pas fusionnée dans `main`) → **Run workflow**.
+3. Attends 8 à 20 minutes. Pastille verte ✅ = réussi.
+4. Le workflow **échoue exprès** si l'extension Dynamic Island (`SelfBuildWidget.appex`) manque dans l'app : sans elle, pas de Live Activity.
 
-## ÉTAPE 3 – Envoyer les fichiers (sur ordinateur, ou le Mac TeamViewer)
-Dézippe `SelfBuild-GitHub.zip`. Tu obtiens : `SelfBuild/` (18 fichiers .swift), `SelfBuildWidget/`, `project.yml`, `.gitignore`, `.github/`.
+### Si c'est rouge ❌
+1. Clique sur le run → étape **Résumé des erreurs** : copie les lignes `error:`.
+2. Envoie-les à Claude : il corrige le fichier concerné.
+3. Le journal complet est dans **Artifacts → build-log** en bas de la page du run.
 
-1. Dans ton dépôt : **Add file → Upload files**.
-2. Glisse **les dossiers `SelfBuild` et `SelfBuildWidget`** + les fichiers `project.yml` et `.gitignore`. Attends la fin du chargement.
-3. En bas : **Commit changes** (branche main).
-4. Le dossier caché `.github` est souvent ignoré par le glisser-déposer. Crée-le à la main :
-   - **Add file → Create new file**
-   - Dans le champ du nom, tape exactement : `.github/workflows/build.yml` (les `/` créent les dossiers)
-   - Ouvre `build.yml` du zip, copie-colle tout son contenu
-   - **Commit changes**.
+## 3. Récupérer le `.ipa`
+Dépôt → colonne de droite **Releases** → la plus récente (**Build N · branche · commit**) → télécharge `SelfBuild.ipa`.
+- Les builds de la branche `v3` sont marqués **Pre-release** ; ceux de `main` sont des versions normales.
+- Fais-le depuis Safari sur l'iPhone : le fichier arrive dans **Fichiers → Téléchargements**.
 
-Vérifie à la fin que tu vois à la racine du dépôt : `.github`, `SelfBuild`, `SelfBuildWidget`, `project.yml`.
-
-## ÉTAPE 4 – Lancer la compilation
-1. Onglet **Actions** du dépôt. (Si GitHub demande d'activer les workflows : « I understand… enable ».)
-2. À gauche **Build IPA** → **Run workflow** → Run workflow. (Ça démarre aussi tout seul à chaque commit sur main.)
-3. Attends 5 à 12 minutes. Pastille verte ✅ = réussi.
-
-### Si c'est rouge ❌ (probable au premier essai : je n'ai pas pu compiler le code moi-même)
-1. Clique sur le run rouge → étape **Résumé des erreurs** : tu vois les lignes `error:`.
-2. Copie ces lignes et envoie-les-moi ici : je corrige le fichier concerné et tu le remplaces sur GitHub (ouvre le fichier → icône crayon → colle → Commit).
-3. Le journal complet est aussi dans « Artifacts → build-log » en bas de la page du run.
-
-## ÉTAPE 5 – Récupérer l'IPA
-Dépôt → colonne de droite **Releases** → **Build N** → télécharge `SelfBuild.ipa`. Fais-le directement depuis Safari sur l'iPhone (connecté à GitHub) → il atterrit dans Fichiers → Téléchargements.
-
-## ÉTAPE 6 – Installer SideStore (une seule fois, ordinateur requis)
-Les outils bougent : en cas de doute, suis https://docs.sidestore.io (section Installation).
+## 4. Installer SideStore avec iloader (une seule fois, sur ordinateur)
+Les outils évoluent : en cas de doute, suis https://docs.sidestore.io (section Installation).
 
 **Sur l'iPhone**
-1. iPhone iOS 17 minimum. Réglages → Confidentialité et sécurité → **Mode développeur** → ON → l'iPhone redémarre → confirme.
-2. App Store → installe **LocalDevVPN** → ouvre-le → Skip → **Connect** → Allow + code. (Laisse-le connecté pendant l'étape.)
+1. Réglages → Confidentialité et sécurité → **Mode développeur** → ON → redémarrage → confirme.
+2. App Store → installe **LocalDevVPN** → ouvre-le → **Connect** → autorise le VPN.
 
-**Sur l'ordinateur (Windows/Linux/Mac)**
-1. Windows : installe iTunes (version du site Apple, pas Microsoft Store) pour les pilotes. Linux : installe `usbmuxd`.
-2. Télécharge **iloader** (github.com/nab138/iloader/releases/latest) : `iloader-windows-x64.msi` sous Windows, `.dmg` sous Mac.
+**Sur l'ordinateur**
+1. Windows : installe iTunes (version du site d'Apple, pas Microsoft Store) pour les pilotes USB.
+2. Télécharge **iloader** : https://github.com/nab138/iloader/releases/latest (`.msi` sous Windows).
 3. Branche l'iPhone en USB, déverrouillé, « Faire confiance ». Ordinateur et iPhone sur le même Wi-Fi.
 4. Ouvre iloader → connecte-toi avec ton Apple ID → vérifie que l'iPhone est détecté → **Install SideStore (Stable)**.
-5. Sur l'iPhone : ouvre SideStore. Si un message de confiance apparaît : Réglages → Général → VPN et gestion de l'appareil → ton Apple ID → Faire confiance.
-6. Connecte-toi dans SideStore avec ton Apple ID si demandé. Tu peux débrancher.
+5. Sur l'iPhone : Réglages → Général → **VPN et gestion de l'appareil** → ton Apple ID → **Faire confiance**.
+6. Ouvre SideStore, connecte-toi avec ton Apple ID si demandé. Tu peux débrancher le câble.
 
-## ÉTAPE 7 – Installer SELF BUILD
-1. LocalDevVPN : **Connect** (toujours le faire avant d'installer/rafraîchir).
-2. Ouvre SideStore → onglet **My Apps** → **+** (en haut à gauche) → choisis `SelfBuild.ipa` dans Fichiers.
-3. Attends la fin de la signature/installation. Si ça bloque : relance le bouton, ou redémarre SideStore puis LocalDevVPN.
-4. Ouvre SELF BUILD. Accepte notifications, micro, reconnaissance vocale, appareil photo.
-5. **Plus → Réglages** : colle ta clé Gemini.
+## 5. Installer (ou mettre à jour) SELF BUILD
+1. LocalDevVPN → **Connect** (toujours avant d'installer ou de rafraîchir).
+2. SideStore → onglet **My Apps** → **+** → choisis `SelfBuild.ipa` dans Fichiers.
+3. Si SideStore demande quoi faire des **extensions** (« Keep App Extensions » / « Remove ») : choisis **Keep / Garder**. Sinon la Dynamic Island ne marchera pas (Réglages de l'app → Dynamic Island affichera « ❌ Extension absente »).
+4. Une mise à jour remplace l'ancienne version **en gardant tes données** (la v3 reprend automatiquement les données de la v2).
 
-## ÉTAPE 8 – Chaque semaine (7 jours de validité)
-1. LocalDevVPN → Connect.
-2. SideStore → My Apps → **Refresh All**.
-Le rafraîchissement automatique en arrière-plan marche tant que LocalDevVPN reste connecté et que l'actualisation en arrière-plan est active (Réglages → Général). Si l'app expire, la rafraîchir suffit : tes données restent.
+## 6. Premier lancement (v3)
+L'app te demande dans l'ordre :
+1. **La clé Gemini** : bouton « Ouvrir Google AI Studio », puis **Coller** et **Tester la clé**.
+2. **Ton profil** : prénom, âge, taille, poids, ville (« Vérifier » : la météo suit ta ville), monnaie, et si tu es élève : niveau, établissement, matières.
+3. **Tes objectifs** (prise de muscle, études, argent…).
+4. **Ton rythme** : réveil, coucher ; calories et protéines sont calculées puis modifiables.
+Accepte ensuite : notifications, micro, reconnaissance vocale, appareil photo, localisation (Running), Activités en direct.
 
-## ÉTAPE 9 – Mettre à jour l'app (après une modification du code)
-1. Modifie le fichier sur GitHub (crayon → Commit) → le build repart seul.
-2. Télécharge le nouvel IPA dans Releases.
-3. SideStore → My Apps → **+** → le nouvel IPA : il remplace l'ancienne version et garde tes données.
+## 7. Chaque semaine (signature gratuite = 7 jours)
+LocalDevVPN → Connect → SideStore → My Apps → **Refresh All**. Si l'app expire, la rafraîchir suffit : tes données restent.
 
 ---------------------------------------------------------------
+## Limites du compte Apple gratuit (à connaître)
+- **3 apps actives** max (SideStore en compte une) et **10 identifiants d'app (App IDs) par semaine**. SELF BUILD + son extension en utilisent **2** : ne réinstalle pas en boucle.
+- **Pas d'entitlements payants** : 
+  - notifications « urgentes » (`timeSensitive`) : iOS peut les afficher comme des notifications normales ;
+  - **Lockdown** = verrouillage **dans SELF BUILD uniquement** (bloquer les autres apps exige FamilyControls, réservé aux comptes payants).
+- **Dynamic Island** : iPhone 14 Pro et plus récents. Sur les autres, la Live Activity s'affiche sur l'écran verrouillé. Elle n'est **visible que hors de l'app** (écran d'accueil ou verrouillé). iOS interdit les animations continues : Nexus change de pose toutes les ~8 s tant que l'app tourne.
+
 ## Dépannage rapide
-- **« Cannot start DebugServer » / échec de connexion** : vérifie Wi-Fi + LocalDevVPN connectés, redémarre les deux apps ; sinon régénère le fichier de pairing avec iloader (doc SideStore → Advanced → Pairing File).
-- **Limite Apple gratuite** : 3 apps actives (SideStore compte pour une) et 10 identifiants d'app par semaine. SELF BUILD + son extension Dynamic Island en utilisent 2. Ne réinstalle pas en boucle.
-- **Pas de Dynamic Island** : elle n'existe que sur iPhone 14 Pro et plus récents ; ailleurs, la Live Activity s'affiche sur l'écran verrouillé.
-- **Mise à jour d'iOS / réinitialisation** : le fichier de pairing peut devenir invalide → ré-ouvre iloader sur un ordinateur.
-- **Run GitHub rouge** : voir étape 4, envoie-moi les lignes `error:`.
+- **AirPlay ne trouve pas tes enceintes** : coupe **LocalDevVPN** pendant l'écoute (un VPN actif bloque la découverte AirPlay sur le Wi-Fi). Rallume-le seulement pour installer/rafraîchir.
+- **« Cannot start DebugServer » / échec SideStore** : Wi-Fi + LocalDevVPN connectés, redémarre les deux apps ; sinon régénère le fichier de pairing avec iloader.
+- **Nexus répond « Gemini est surchargé (503) »** : l'app a déjà essayé plusieurs modèles ; réessaie dans une minute ou choisis un autre modèle dans Réglages.
+- **Mise à jour d'iOS** : le fichier de pairing peut devenir invalide → refais l'étape 4 sur un ordinateur.
 
 ---------------------------------------------------------------
-## MISE À JOUR v2 (logo, modules, correction Gemini)
-Les fichiers ont changé : remplace tout le contenu de ton dépôt par le nouveau zip.
-Dans le dossier du projet sur le Mac :
-```bash
-git add .
-git commit -m "v2"
-git push
-```
-Le build repart seul. Récupère le nouvel IPA dans Releases puis SideStore → My Apps → + (il remplace l'ancienne version, tes données restent).
-Si GitHub refuse le push parce que le dépôt a des changements distants : `git push --force`.
+## Annexe — Google Drive automatique (optionnel, non activé)
+Aujourd'hui, les photos de cours vont dans Drive via **Partager → Drive** (aucune configuration).
+Une synchro **automatique** exigerait :
+1. un projet sur https://console.cloud.google.com avec l'API **Google Drive** activée ;
+2. un **ID client OAuth** de type iOS (avec l'identifiant `com.melik.selfbuild`) et un écran de consentement (mode « Test », ton compte ajouté comme testeur) ;
+3. dans l'app : la connexion Google (par ex. `ASWebAuthenticationSession`), la conservation sécurisée du jeton, puis l'envoi des fichiers via l'API REST Drive.
+C'est faisable gratuitement mais plus complexe ; le partage manuel reste la solution recommandée.
+
+## Annexe — Passer la v3 sur `main`
+Tant que tu testes, la v3 vit sur la branche `v3` (builds « Pre-release »). Quand tout va bien, fusionne-la dans `main` (GitHub → Pull requests → New → `v3` → `main` → Merge) : le build de `main` repart seul.
